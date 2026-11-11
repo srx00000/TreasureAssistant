@@ -1,6 +1,6 @@
 """Local inventory, lossless decimal statistics and per-slot recommendations."""
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -265,6 +265,25 @@ class Store:
         with self.conn:
             item_id,_=self._save(item,confirmed=confirmed,update_id=item.id if item.id is not None else existing.id if existing else None)
             self.conn.execute('DELETE FROM drafts WHERE id=?',(draft_id,))
+        return item_id
+    def confirm_visible(self,item):
+        """Explicitly accept the displayed snapshot without changing a live OCR object."""
+        reviewed=replace(item,stats=list(item.stats),warnings=[],complete=True,confirmed=True,draft_id=None)
+        if not reviewed.category or not reviewed.stats:raise ValueError('需要擺放類別與至少一項完整屬性；請用編輯／補正。')
+        if len({(s.name,s.unit) for s in reviewed.stats})!=len(reviewed.stats):raise ValueError('屬性重複，請先編輯／補正。')
+        existing=next((i for i in self.items() if i.fingerprint()==reviewed.fingerprint()),None)
+        draft=next((d for d in self.drafts() if d.draft_id==item.draft_id),None) if item.draft_id is not None else None
+        if draft is not None and draft.fingerprint()!=reviewed.fingerprint():raise ValueError('草稿已更新，請重新擷取或編輯／補正後確認。')
+        if item.draft_id is not None and draft is None and existing is None:raise ValueError('此草稿已移除，請重新擷取。')
+        if item.id is not None and item.draft_id is None and (existing is None or existing.id!=item.id):raise ValueError('此紀錄已變更，請重新擷取。')
+        # A new OCR observation cannot reset an existing group's manually checked count.
+        if existing is not None and item.source!='manual-draft':reviewed.quantity=existing.quantity
+        with self.conn:
+            item_id,_=self._save(reviewed,confirmed=True,update_id=reviewed.id or (existing.id if existing else None))
+            # Same convention as the full editor's explicit review checkbox.
+            for stat in reviewed.stats:
+                self.conn.execute('UPDATE attributes SET direction=1 WHERE name=? AND unit=? AND direction=0',(stat.name,stat.unit))
+            if draft is not None:self.conn.execute('DELETE FROM drafts WHERE id=?',(draft.draft_id,))
         return item_id
     def remove_records(self,item_ids=(),draft_ids=()):
         item_ids=set(item_ids);draft_ids=set(draft_ids)

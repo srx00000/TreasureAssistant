@@ -16,7 +16,7 @@ from .ocr import Engine, parse
 from .capture import overlaps, safe_position, request_frame
 
 APP_ROOT=Path(__file__).resolve().parent.parent
-VERSION='0.3.1'
+VERSION='0.4.0'
 STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對'}
 ROW_STATES={'unique':'本欄位最高／唯一','tie':'並列最高','lower':'已有較高值','unknown':'比較規則待核對'}
 
@@ -91,25 +91,30 @@ class App:
         self.button(toolbar,'擷取一次',self.capture_once).pack(side='left',padx=(0,6))
         self.run_label=tk.StringVar(value=self.t('監看中' if self.monitoring else '已停止'))
         ttk.Label(toolbar,textvariable=self.run_label).pack(side='right')
-        self.notebook=ttk.Notebook(base);self.notebook.pack(fill='both',expand=True)
+        self.notebook=ttk.Notebook(base)
         self.scan_tab=ttk.Frame(self.notebook,padding=8);self.plan_tab=ttk.Frame(self.notebook,padding=8)
         self.inventory_tab=ttk.Frame(self.notebook,padding=8);self.settings_tab=ttk.Frame(self.notebook,padding=8)
         for frame,title in [(self.scan_tab,'即時判斷'),(self.plan_tab,'用途配裝'),(self.inventory_tab,'持有庫'),(self.settings_tab,'設定')]:self.notebook.add(frame,text=self.t(title))
         self.build_scan();self.build_plan();self.build_inventory();self.build_settings()
         self.status=tk.StringVar(value=self.t('先到設定選取中央面板，再開始辨識。'))
-        self.wrapped(base,textvariable=self.status).pack(fill='x',pady=(7,0))
+        self.wrapped(base,textvariable=self.status).pack(side='bottom',fill='x',pady=(7,0))
+        self.notebook.pack(fill='both',expand=True)
     def build_scan(self):
         self.result_choice=ttk.Combobox(self.scan_tab,state='readonly',values=[],width=1);self.result_choice.pack(fill='x')
         self.result_choice.bind('<<ComboboxSelected>>',self.choose_scan)
         self.item_heading=ttk.Label(self.scan_tab,text=self.t('等待遊戲藏品詳情'),font=(self.font,10,'bold'));self.item_heading.pack(anchor='w',pady=(8,2))
         self.verdict_label=ttk.Label(self.scan_tab,text=self.t('等待辨識'),style='Headline.TLabel');self.verdict_label.pack(anchor='w',pady=(0,5))
         self.scan_notice=tk.StringVar();self.wrapped(self.scan_tab,textvariable=self.scan_notice).pack(fill='x',pady=(0,6))
+        footer=ttk.Frame(self.scan_tab);footer.pack(side='bottom',fill='x')
         self.compare_tree=self.make_tree(self.scan_tab,['name','value','best'],['全部屬性','本件','其他最高'],[220,80,85],height=7)
         for state,color in [('unique','#e8f3eb'),('tie','#eaf0f7'),('lower','#f3f4f3'),('unknown','#fff0d7')]:self.compare_tree.tag_configure(state,background=color)
         self.comparison_detail=tk.StringVar(value=self.t('選取一項屬性，查看排名與比較對象。'))
-        self.wrapped(self.scan_tab,textvariable=self.comparison_detail).pack(fill='x',pady=6)
+        self.wrapped(footer,textvariable=self.comparison_detail).pack(fill='x',pady=6)
         self.compare_tree.bind('<<TreeviewSelect>>',lambda e:self.show_attribute_detail())
-        self.button(self.scan_tab,'核對／編輯本件',self.edit_current).pack(anchor='w')
+        bar=ttk.Frame(footer);bar.pack(fill='x')
+        self.button(bar,'確認本件',self.confirm_current).pack(side='left',padx=(0,7))
+        self.button(bar,'編輯／補正',self.edit_current).pack(side='left')
+        self.wrapped(footer,text='確認即視為已核對完整屬性；新屬性預設越高越好。').pack(fill='x',pady=(5,0))
     def build_plan(self):
         ttk.Label(self.plan_tab,text=self.t('我要專精')).pack(anchor='w')
         self.goal=ttk.Combobox(self.plan_tab,state='readonly',width=1);self.goal.pack(fill='x',pady=(4,6));self.goal.bind('<<ComboboxSelected>>',lambda e:self.refresh_plan())
@@ -205,7 +210,9 @@ class App:
         self.compare_tree.delete(*self.compare_tree.get_children());self.comparison_rows={}
         for row in self.advisor.compare(compare_item):
             rid=self.compare_tree.insert('','end',values=(self.t(row.stat.name),fmt(row.stat.value,row.stat.unit),fmt(row.best_other,row.stat.unit) if row.best_other is not None else '—'),tags=(row.state,));self.comparison_rows[rid]=row
-        if item.warnings:self.scan_notice.set(self.convert(item.warnings[0])+self.t('；完整原因見核對頁。'))
+        if compare_item.confirmed:self.scan_notice.set(self.t('本件已確認；可繼續辨識其他藏品。'))
+        elif item.warnings:self.scan_notice.set(self.convert(item.warnings[0])+self.t('；可用編輯／補正處理。'))
+        else:self.scan_notice.set(self.t('對照完整屬性後可按「確認本件」。'))
         self.comparison_detail.set(self.t('選取屬性可查看排名、差距與比較對象。'))
     def show_attribute_detail(self):
         selected=self.compare_tree.selection()
@@ -216,6 +223,7 @@ class App:
             line+=self.t('；差距 ')+fmt(delta,' 個百分點' if r.stat.unit=='%' else '',True)+self.t('；比較 ')+', '.join(f'#{i:04d}' for i in r.alternatives)
         self.comparison_detail.set(line)
     def display_scan(self,scan):
+        previous=self.current.fingerprint() if self.current is not None else None
         self.last_scan=scan;self.pending=scan.items
         labels=[]
         for idx,item in enumerate(scan.items):
@@ -224,7 +232,9 @@ class App:
         self.result_choice['values']=labels
         warnings=list(dict.fromkeys(scan.messages+[w for i in scan.items for w in i.warnings]))
         self.scan_notice.set(self.convert(warnings[0]) if warnings else self.t('全部屬性已配對；點選列可看比較依據。'))
-        if labels:self.result_choice.current(0);self.current=scan.items[0];self.show_comparison(self.current)
+        if labels:
+            idx=next((i for i,item in enumerate(scan.items) if item.fingerprint()==previous),0)
+            self.result_choice.current(idx);self.current=scan.items[idx];self.show_comparison(self.current)
         else:
             self.result_choice.set('');self.current=None;self.compare_tree.delete(*self.compare_tree.get_children())
             self.verdict_label.configure(text=self.t('擷取受遮擋' if scan.mode=='blocked' else '尚無完整屬性'),foreground='#8a560c')
@@ -234,6 +244,12 @@ class App:
     def edit_current(self):
         if self.current is None:raise ValueError(self.t('目前沒有可核對藏品；可到持有庫手動新增。'))
         self.show_editor(self.current)
+    def confirm_current(self):
+        if self.editor_open:raise ValueError(self.t('請先完成並關閉編輯視窗。'))
+        if self.current is None:raise ValueError(self.t('目前沒有可確認的藏品；請先擷取藏品詳情。'))
+        item_id=self.store.confirm_visible(self.current)
+        self.refresh();self.open_item(self.item_map[item_id])
+        self.status.set(self.t('已確認並保存 ')+self.t(self.item_map[item_id].label())+self.t('；持續辨識未中斷。' if self.monitoring else '。'))
     def edit_selected(self):
         sel=self.inv_tree.selection()
         if len(sel)!=1:raise ValueError(self.t('請選取一件要查看的藏品'))
@@ -539,18 +555,21 @@ class App:
                 elif event[0]=='done':self.monitoring=False;self.worker_ui()
                 elif event[0]=='scan':
                     if self.ignore_scans:continue
-                    scan,repeat=event[1:];saved=False;confirmed_count=0;staged=0
+                    scan,repeat=event[1:];saved=False
                     for item in scan.items:
                         self.prepare_item(item)
                         auto=repeat>=2 and self.autosave.get() and item.complete and not item.warnings
                         kind,record_id=self.store.observe(item,confirmed=bool(auto),raw_text=scan.text)
-                        if kind=='item':item.id=record_id;confirmed_count+=bool(auto)
-                        else:item.draft_id=record_id;item.id=None;staged+=1
+                        if kind=='item':item.id=record_id
+                        else:item.draft_id=record_id;item.id=None
                         saved=True
                     if saved:self.refresh()
                     if not self.editor_open:self.display_scan(scan)
                     if not scan.items:self.status.set(self.convert(scan.messages[0]) if scan.messages else self.t('尚無可配對屬性，未寫入持有庫。'))
-                    else:self.status.set(self.t('讀到 ')+str(len(scan.items))+self.t(' 件；本次確認 ')+str(confirmed_count)+self.t(' 件，暫存 ')+str(staged)+self.t(' 件。草稿已保存，可到持有庫核對。'))
+                    else:
+                        known={i.fingerprint() for i in self.items if i.confirmed}
+                        confirmed=sum(i.fingerprint() in known for i in scan.items)
+                        self.status.set(self.t('讀到 ')+str(len(scan.items))+self.t(' 件；已確認 ')+str(confirmed)+self.t(' 件，待核對 ')+str(len(scan.items)-confirmed)+self.t(' 件。'))
         except queue.Empty:pass
         except Exception as e:self.log.exception('Result handling failed');self.status.set(self.t('處理失敗：')+str(e))
         self.poll_after=self.root.after(100,self.poll)

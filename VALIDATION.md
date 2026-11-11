@@ -1,6 +1,9 @@
-# Validation — v0.3.1
+# Validation — v0.4.0
 
-- 65 unit and regression tests passed (Python 3.12).
+- 74 unit and regression tests passed (Python 3.12).
+- Quick-confirm regressions verify explicit low-confidence/incomplete snapshot acceptance without mutating a live OCR object, atomic draft promotion and rule updates/rollback, existing counts retained, repeated confirmation deduplicated, missing/duplicate required fields rejected, stale/deleted snapshots rejected, auto-promoted drafts handled, and pending manual edits applied to their original record.
+- Traditional and simplified live-worker UI integration clicked the actual confirm button: no stop call, editor or modal; same worker stayed active, later captures continued, right-side selection survived repeated compare scans, and duplicate clicks did not add records. The separate edit button stopped monitoring and opened the existing editor as expected. Footer buttons and status were visible at 470x640 and 430x600. OCR outputs were supplied from the real-image fixture for this workflow test; OCR engine code is unchanged.
+- Existing v0.3 checks below remain covered; the new workflow does not change dependencies or schema.
 - Added regression checks for both CLEAR and RESET restarting item and draft IDs after reopening, ordinary deletion/recycling preserving non-reuse, and failed resets rolling back both records and sequence counters. UI clear/reset paths also verified fresh IDs start at 1.
 - Existing six-screen fixtures retained; added an upright warehouse-detail OCR fixture with text and geometry only.
 - Actual RapidOCR runs on the six original screenshots and the new warehouse screenshot verified the upright pipeline. The warehouse returned four distinct attributes: all-faction soldier destruction 2.74%, cavalry attack 9.88%, all-faction soldier defense 2.91%, food production 9.99%. Scope-text confidence remained low, correctly requiring review.
