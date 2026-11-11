@@ -1,0 +1,8 @@
+# CPU only. Wheels support CPython 3.11 / 3.12, Windows x64.
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.20.1
+numpy==1.26.4
+opencv-python==4.11.0.86
+Pillow==11.3.0
+opencc-python-reimplemented==0.1.7
+mss==10.1.0
