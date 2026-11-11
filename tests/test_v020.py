@@ -18,7 +18,7 @@ class RobustParsingTests(unittest.TestCase):
         self.assertEqual(len(item.stats),5);self.assertTrue(item.warnings)
     def test_numbers_without_labels_are_not_guessed(self):
         lines=[l for l in self.fixture() if l.text not in ('铁矿产量','骑兵生命值','弓兵防御力','弓兵生命值','[全阵营]士兵生命值')]
-        result=parse(lines);self.assertEqual(result.items,[])
+        result=parse(lines);self.assertEqual(len(result.items),1);self.assertEqual(result.items[0].stats,[]);self.assertFalse(result.items[0].complete)
         self.assertIn('沒有完整屬性名稱',result.messages[0]);self.assertEqual(result.diagnostics['columns'][0]['numeric_rows'],5)
     def test_partial_labels_keep_paired_attributes_but_warn(self):
         lines=[l for l in self.fixture() if l.text!='铁矿产量'];result=parse(lines)

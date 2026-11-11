@@ -1,5 +1,6 @@
 # Local inventory and settings
 data/
+/treasure-inventory*.json
 *.sqlite3
 *.sqlite3-*
 *.db

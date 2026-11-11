@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import re
+from statistics import median
 from .core import Item, Stat, norm, DEFAULT_CATEGORIES, NAME_CATEGORIES
 
 @dataclass
@@ -57,7 +58,8 @@ def parse(lines:list[Line],category_for_name=None):
         group=[j for j in headers if abs(h.y-j.y)<max(h.height,j.height)]
         if len(group)>len(best):best=group
     headers=sorted(best,key=lambda l:l.x)[:2]
-    mode='compare' if len(headers)==2 else 'recycle' if '藏品回收' in text else 'detail'
+    recycle_title=any(l.text=='藏品回收' and l.bottom<headers[0].top and headers[0].y-l.y<max(400,headers[0].height*30) for l in lines)
+    mode='compare' if len(headers)==2 else 'recycle' if recycle_title else 'detail'
     items=[];messages=[];diagnostics={'columns':[]}
     mids=[(headers[0].x+headers[1].x)/2] if len(headers)==2 else []
     ignored={'查看','生效中','卸下','替换藏品','藏品回收','藏宝阁','藏品总战力','属性预览','精美饰物','祭祀礼乐'}
@@ -85,32 +87,58 @@ def parse(lines:list[Line],category_for_name=None):
             possible=[l for l in above if 1<=len(l.text)<=8 and 8<qline.y-l.y<45 and l.text not in ignored and not re.search(r'\d',l.text)]
             if len(possible)==1 and mode=='detail':category=possible[0].text
         if not category:category=(category_for_name(name) if category_for_name else '') or NAME_CATEGORIES.get(name,'')
-        after=[l for l in column if l.top>header.bottom and l.text in ('替换藏品','卸下','穿戴','普通','精良','可获得','回收')]
+        after=[l for l in column if l.top>header.bottom and l.text in ('替换藏品','卸下','穿戴','普通','精良','可获得','回收','展示藏品对比','显示藏品对比','藏品对比')]
         stop=min([l.top for l in after]+[header.y+max(330,header.height*22)])
         body=[l for l in column if header.bottom<l.y<stop]
-        values=[]
+        values=[];bad_numbers=[]
         for l in body:
-            if re.fullmatch(r'[+\-]?\d+(?:[.,]\d+)?%?',l.text):values.append((l,l.text,''))
+            if NUM.fullmatch(l.text) and l.x>header.x:values.append((l,l.text,''))
             else:
                 m=re.search(r'([+\-]\d+(?:[.,]\d+)?%?)$',l.text)
-                if m:values.append((l,m.group(),l.text[:m.start()]))
+                if m and re.search(r'[\u4e00-\u9fff]',l.text[:m.start()]):values.append((l,m.group(),l.text[:m.start()]))
+                elif l.x>header.x and re.search(r'\d',l.text) and not re.search(r'[\u4e00-\u9fff]',l.text) and any(c in l.text for c in '%+-'):
+                    bad_numbers.append(l)
         values.sort(key=lambda v:v[0].y)
-        stats=[];warnings=[];scores=[qline.confidence] if qline else [header.confidence];unpaired=[]
-        for j,(vl,token,inline) in enumerate(values):
-            lo=header.bottom if j==0 else (values[j-1][0].y+vl.y)/2
-            hi=stop if j==len(values)-1 else (vl.y+values[j+1][0].y)/2
-            labels=[l for l in body if lo<=l.y<hi and l.right<=vl.left+6 and l is not vl and not NUM.fullmatch(l.text)]
-            label=(inline or ''.join(l.text for l in sorted(labels,key=lambda l:(l.y,l.x)))).strip('·:：')
+        # Build text rows independently of numbers, so a missing number cannot join adjacent rows.
+        inline_lines={id(v[0]) for v in values if v[2]}
+        positions=[v[0].left if not v[2] else v[0].right-len(v[1])*v[0].height*.55 for v in values]+[l.left for l in bad_numbers]
+        value_left=median(positions) if positions else header.x+40
+        labels=[l for l in body if id(l) not in inline_lines and re.search(r'[\u4e00-\u9fff]',l.text)
+                and l.text not in ignored and l.right<=value_left+8]
+        labels.sort(key=lambda l:(l.y,l.x))
+        text_height=median([l.height for l in labels]) if labels else header.height
+        gaps=[values[j][0].y-values[j-1][0].y for j in range(1,len(values)) if values[j][0].y-values[j-1][0].y>text_height*.65]
+        threshold=min(text_height*1.25,median(gaps)*.60) if gaps else text_height*1.25
+        groups=[]
+        for l in labels:
+            if groups and l.y-groups[-1][-1].y<=max(4,threshold):groups[-1].append(l)
+            else:groups.append([l])
+        def distance(y,group):
+            top=min(l.top for l in group);bottom=max(l.bottom for l in group)
+            return max(top-y,y-bottom,0)
+        stats=[];warnings=[];scores=[qline.confidence] if qline else [header.confidence];unpaired=[];used=set()
+        for vl,token,inline in values:
+            options=[(distance(vl.y,g),j,g) for j,g in enumerate(groups) if j not in used]
+            options.sort(key=lambda entry:(entry[0],abs(vl.y-sum(l.y for l in entry[2])/len(entry[2]))))
+            matched=[]
+            if options and options[0][0]<=max(4,text_height*.40):
+                _,j,matched=options[0];used.add(j)
+            label=(inline+''.join(l.text for l in sorted(matched,key=lambda l:(l.y,l.x)))).strip('·:：')
             if len(label)<2 or not re.search(r'[\u4e00-\u9fff]',label):
-                unpaired.append(token);continue
-            score=min([vl.confidence]+[l.confidence for l in labels])
+                if token.startswith(('+','-')) or '%' in token:unpaired.append(token)
+                continue
             match=NUM.fullmatch(token)
-            if not match:continue
+            if not match:unpaired.append(token);continue
+            score=min([vl.confidence]+[l.confidence for l in matched])
             try:stats.append(Stat(label,match.group(1).replace(',','.'),match.group(2),score,label))
             except ValueError:unpaired.append(token);continue
             scores.append(score)
+        missing_labels=[''.join(l.text for l in group) for j,group in enumerate(groups) if j not in used]
         if unpaired:warnings.append('有數值缺少對應屬性名稱：'+'、'.join(unpaired))
-        if any('未揭示' in l.text or '隐藏属性' in l.text for l in body):warnings.append('存在未揭示屬性')
+        if missing_labels:warnings.append('屬性缺少可讀數值：'+'、'.join(missing_labels))
+        if bad_numbers:warnings.append('數值文字未能解析：'+'、'.join(l.text for l in bad_numbers))
+        hidden=any('未揭示' in l.text or '隐藏属性' in l.text for l in body)
+        if hidden:warnings.append('存在未揭示屬性')
         if not category:warnings.append('擺放類別未讀到，請在核對頁選擇')
         if not quality:warnings.append('品質未讀到；可核對屬性後手動保存')
         if not name:warnings.append('名稱未讀到（次要資訊，可留空）')
@@ -119,12 +147,13 @@ def parse(lines:list[Line],category_for_name=None):
         if expected is None or len(stats)!=expected:warnings.append('請核對屬性是否完整；已配對 '+str(len(stats))+' 項')
         if len({(s.name,s.unit) for s in stats})!=len(stats):warnings.append('存在重複屬性')
         if min(scores)<.90:warnings.append('部分文字不清楚，請核對')
-        diagnostics['columns'].append({'column':idx+1,'numeric_rows':len(values),'paired_attributes':len(stats),'unpaired_values':unpaired,'missing_category':not bool(category),'missing_quality':not bool(quality)})
+        diagnostics['columns'].append({'column':idx+1,'numeric_rows':len(values),'paired_attributes':len(stats),'unpaired_values':unpaired,'missing_category':not bool(category),'missing_quality':not bool(quality),'unpaired_labels':missing_labels,'unreadable_numbers':[l.text for l in bad_numbers]})
         if not stats:
             messages.append('第 '+str(idx+1)+' 欄讀到 '+str(len(values))+' 個數值，但沒有完整屬性名稱；請確認未被其他視窗遮擋。')
-            continue
+            if not (power and (name or category)):continue
+        complete=bool(stats) and not (unpaired or missing_labels or bad_numbers or hidden) and expected is not None and len(stats)==expected and len({(s.name,s.unit) for s in stats})==len(stats)
         equipped=(idx==0 and mode=='compare') or (mode=='detail' and any(l.text=='卸下' for l in after))
-        items.append(Item(category,name,quality,power,stats,equipped,min(scores),warnings,mode))
+        items.append(Item(category,name,quality,power,stats,equipped,min(scores),warnings,mode,complete=complete))
     if not items and not messages:messages.append('找到屬性面板，但尚無可配對的屬性；請完整框選左側名稱與右側數值。')
     return Scan(mode,items,messages,text,diagnostics)
 
@@ -136,5 +165,5 @@ class Engine:
         if self.engine is None:
             self.engine=RapidOCR(intra_op_num_threads=2,inter_op_num_threads=1)
         rgb=image.convert('RGB')
-        result,_=self.engine(np.asarray(rgb)[:,:,::-1].copy())
+        result,_=self.engine(np.asarray(rgb)[:,:,::-1].copy(),use_cls=False)
         return result_lines(result)
