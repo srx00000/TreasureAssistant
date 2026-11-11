@@ -1,0 +1,29 @@
+# Local inventory and settings
+data/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local configuration, logs and models
+.env
+.env.*
+*.log
+*.onnx
+
+# Generated files and local screenshots
+build/
+dist/
+qa/
+upload/
+screenshots/
+*.zip
+Thumbs.db
+.DS_Store
