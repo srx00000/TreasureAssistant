@@ -109,6 +109,31 @@ class DraftTests(unittest.TestCase):
         self.store.clear(reset_rules=True,reset_settings=True)
         self.assertIsNone(self.store.get_setting('region'));self.assertNotIn(('新属性','%'),self.store.definitions());self.assertEqual(self.store.drafts(),[])
         self.assertEqual(self.store.definitions()[('木材采集速度','%')],1)
+    def test_full_clear_and_reset_restart_both_sequences_after_reopen(self):
+        for reset in (False,True):
+            with self.subTest(reset=reset):
+                for value in ('1','2','3'):
+                    self.store.save(self.gear(value,True),confirmed=True);self.store.stage(self.gear(value))
+                self.store.clear(reset_rules=reset,reset_settings=reset)
+                self.store.close();self.store=Store(self.path)
+                self.assertEqual(self.store.items(),[]);self.assertEqual(self.store.drafts(),[])
+                self.assertEqual(self.store.conn.execute('SELECT COUNT(*) FROM stats').fetchone()[0],0)
+                self.assertEqual(self.store.save(self.gear('4',True),confirmed=True)[0],1)
+                self.assertEqual(self.store.stage(self.gear('4')),1)
+    def test_ordinary_deletion_does_not_reuse_item_or_draft_ids(self):
+        iid=self.store.save(self.gear('1',True),confirmed=True)[0];did=self.store.stage(self.gear('1'))
+        self.store.remove_records([iid],[did])
+        next_item=self.store.save(self.gear('2',True),confirmed=True)[0];next_draft=self.store.stage(self.gear('2'))
+        self.assertGreater(next_item,iid);self.assertGreater(next_draft,did)
+        self.store.delete({next_item:1})
+        self.assertGreater(self.store.save(self.gear('3',True),confirmed=True)[0],next_item)
+    def test_failed_reset_rolls_back_records_and_sequences(self):
+        iid=self.store.save(self.gear('1',True),confirmed=True)[0];did=self.store.stage(self.gear('1'))
+        self.store.conn.execute("CREATE TRIGGER reject_rule_delete BEFORE DELETE ON attributes BEGIN SELECT RAISE(ABORT,'test rollback'); END")
+        with self.assertRaises(sqlite3.IntegrityError):self.store.clear(reset_rules=True,reset_settings=True)
+        self.assertEqual(self.store.items()[0].id,iid);self.assertEqual(self.store.drafts()[0].draft_id,did)
+        self.assertGreater(self.store.save(self.gear('2',True),confirmed=True)[0],iid)
+        self.assertGreater(self.store.stage(self.gear('2')),did)
     def test_deleted_original_detaches_existing_edit_draft(self):
         iid=self.store.save(self.gear(complete=True),confirmed=True)[0]
         d=self.gear('3');d.id=iid;did=self.store.stage(d)

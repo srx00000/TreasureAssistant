@@ -1,6 +1,7 @@
-# Validation — v0.3.0
+# Validation — v0.3.1
 
-- 62 unit and regression tests passed (Python 3.12).
+- 65 unit and regression tests passed (Python 3.12).
+- Added regression checks for both CLEAR and RESET restarting item and draft IDs after reopening, ordinary deletion/recycling preserving non-reuse, and failed resets rolling back both records and sequence counters. UI clear/reset paths also verified fresh IDs start at 1.
 - Existing six-screen fixtures retained; added an upright warehouse-detail OCR fixture with text and geometry only.
 - Actual RapidOCR runs on the six original screenshots and the new warehouse screenshot verified the upright pipeline. The warehouse returned four distinct attributes: all-faction soldier destruction 2.74%, cavalry attack 9.88%, all-faction soldier defense 2.91%, food production 9.99%. Scope-text confidence remained low, correctly requiring review.
 - Row-pairing regressions cover a missing middle value, malformed inverted numeric text, and warehouse comparison-footer boundaries. Numeric-only content is not guessed into attributes; irrelevant unsigned icon digits are ignored.

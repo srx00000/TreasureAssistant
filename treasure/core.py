@@ -279,6 +279,8 @@ class Store:
     def clear(self,reset_rules=False,reset_settings=False):
         with self.conn:
             self.conn.execute('DELETE FROM items');self.conn.execute('DELETE FROM drafts')
+            # Full clears start a new inventory; ordinary deletion never reuses IDs.
+            self.conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('items','drafts')")
             if reset_rules:
                 self.conn.execute('DELETE FROM attributes');self.conn.execute('DELETE FROM categories')
                 self.conn.executemany('INSERT INTO categories VALUES(?)',[(v,) for v in DEFAULT_CATEGORIES])

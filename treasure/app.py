@@ -16,7 +16,7 @@ from .ocr import Engine, parse
 from .capture import overlaps, safe_position, request_frame
 
 APP_ROOT=Path(__file__).resolve().parent.parent
-VERSION='0.3.0'
+VERSION='0.3.1'
 STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對'}
 ROW_STATES={'unique':'本欄位最高／唯一','tie':'並列最高','lower':'已有較高值','unknown':'比較規則待核對'}
 
@@ -397,7 +397,7 @@ class App:
         self.pause_writes();win=self.own(tk.Toplevel(self.root));win.title(self.t('資料管理'));win.geometry('490x390');win.transient(self.root);win.grab_set()
         body=ttk.Frame(win,padding=14);body.pack(fill='both',expand=True)
         self.database_summary=tk.StringVar();self.wrapped(body,textvariable=self.database_summary).pack(fill='x',pady=(0,12));self.refresh_database_summary()
-        self.wrapped(body,text='清空持有庫會刪除藏品和待核對草稿，保留語言、選區與屬性規則。').pack(fill='x',pady=5)
+        self.wrapped(body,text='清空持有庫會刪除藏品和草稿，編號從 0001 重起；保留語言、選區與屬性規則。').pack(fill='x',pady=5)
         self.button(body,'清空持有庫與待核對資料',lambda:self.clear_inventory(win)).pack(anchor='w',pady=7)
         ttk.Separator(body).pack(fill='x',pady=8)
         self.wrapped(body,text='重設資料庫會再清除自訂屬性、類別與擷取設定，回到初始狀態；不影響遊戲。').pack(fill='x',pady=5)
@@ -411,7 +411,7 @@ class App:
         from tkinter import simpledialog
         self.pause_writes()
         marker='RESET' if reset else 'CLEAR'
-        prompt=self.t('此操作將清除全部藏品與待核對草稿')+self.t('，以及自訂規則、類別與設定。' if reset else '，保留目前設定。')+'\n'+self.t('資料不會自動備份。請輸入 ')+marker+self.t(' 確認：')
+        prompt=self.t('此操作將清除全部藏品與待核對草稿')+self.t('，以及自訂規則、類別與設定。' if reset else '，保留目前設定。')+'\n'+self.t('正式紀錄與草稿編號均從 0001 重新開始。')+'\n'+self.t('資料不會自動備份。請輸入 ')+marker+self.t(' 確認：')
         answer=simpledialog.askstring(self.t('重設資料庫' if reset else '清空持有庫'),prompt,parent=parent or self.root)
         if answer is None:return
         if answer!=marker:raise ValueError(self.t('確認文字不符，沒有刪除任何資料。'))
@@ -419,7 +419,7 @@ class App:
         if reset:
             self.region=None;self.autosave.set(True);self.auto_dock.set(True);self.topmost.set(False);self.root.attributes('-topmost',False)
         self.reset_preview();self.refresh();self.refresh_database_summary()
-        self.status.set(self.t('資料庫已重設，請重新選取遊戲區域。' if reset else '持有庫和待核對草稿已清空；設定已保留。'))
+        self.status.set(self.t('資料庫已重設，請重新選區；編號已歸零。' if reset else '藏品和草稿已清空，設定保留；編號已歸零。'))
     def ensure_idle(self):
         if self.worker and self.worker.is_alive():raise ValueError(self.t('目前正在辨識；請按停止並稍候完成。'))
         if self.editor_open:raise ValueError(self.t('請先完成核對並關閉核對視窗。'))
