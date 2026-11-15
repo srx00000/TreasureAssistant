@@ -16,8 +16,8 @@ from .ocr import Engine, parse
 from .capture import overlaps, safe_position, request_frame
 
 APP_ROOT=Path(__file__).resolve().parent.parent
-VERSION='0.4.0'
-STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對'}
+VERSION='0.5.0'
+STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對','multi':'多用途保留'}
 ROW_STATES={'unique':'本欄位最高／唯一','tie':'並列最高','lower':'已有較高值','unknown':'比較規則待核對'}
 
 
@@ -40,9 +40,10 @@ class App:
         self.monitoring=False;self.editor_open=False;self.editor_window=None;self.owned_windows=[root];self.tickets=[]
         self.poll_after=None;self.capture_afters={};self.selection_after=None
         self.autosave=tk.BooleanVar(value=self.store.get_setting('autosave',True))
-        self.auto_dock=tk.BooleanVar(value=self.store.get_setting('auto_dock',True));self.topmost=tk.BooleanVar(value=False)
+        self.auto_dock=tk.BooleanVar(value=self.store.get_setting('auto_dock',True));self.topmost=tk.BooleanVar(value=self.store.get_setting('topmost',False))
         root.title(self.t('藏品助手')+' '+VERSION+(' · DEMO' if demo else ''))
-        root.geometry('470x640');root.minsize(430,600)
+        root.geometry('470x640');root.minsize(430,600);root.attributes('-topmost',self.topmost.get())
+        self.plan_goals=self.store.get_setting('plan_goals',[]);self.known_categories={}
         import tkinter.font as tkfont
         families=set(tkfont.families(root));choices=['Microsoft JhengHei UI','Microsoft YaHei UI','Noto Sans CJK TC','Noto Sans CJK SC','DejaVu Sans']
         self.font=next((f for f in choices if f in families),'TkDefaultFont')
@@ -116,32 +117,67 @@ class App:
         self.button(bar,'編輯／補正',self.edit_current).pack(side='left')
         self.wrapped(footer,text='確認即視為已核對完整屬性；新屬性預設越高越好。').pack(fill='x',pady=(5,0))
     def build_plan(self):
-        ttk.Label(self.plan_tab,text=self.t('我要專精')).pack(anchor='w')
-        self.goal=ttk.Combobox(self.plan_tab,state='readonly',width=1);self.goal.pack(fill='x',pady=(4,6));self.goal.bind('<<ComboboxSelected>>',lambda e:self.refresh_plan())
-        self.plan_summary=tk.StringVar();self.wrapped(self.plan_tab,textvariable=self.plan_summary).pack(fill='x',pady=5)
-        self.plan_tree=self.make_tree(self.plan_tab,['slot','item','value'],['欄位','建議／狀態','最高值'],[65,225,85],height=8)
+        bar=ttk.Frame(self.plan_tab);bar.pack(fill='x')
+        self.plan_mode=ttk.Combobox(bar,state='readonly',values=[self.t('單項專精'),self.t('多用途加權')],width=12)
+        self.plan_mode.current(1 if self.store.get_setting('plan_mode',0)==1 else 0);self.plan_mode.pack(side='left')
+        self.plan_mode.bind('<<ComboboxSelected>>',lambda e:self.change_plan_mode())
+        self.button(bar,'設定多用途',self.configure_goals).pack(side='left',padx=7)
+        self.goal=ttk.Combobox(self.plan_tab,state='readonly',width=1);self.goal.pack(fill='x',pady=(6,4));self.goal.bind('<<ComboboxSelected>>',lambda e:self.refresh_plan())
+        self.plan_summary=tk.StringVar();self.wrapped(self.plan_tab,textvariable=self.plan_summary).pack(fill='x',pady=4)
+        footer=ttk.Frame(self.plan_tab);footer.pack(side='bottom',fill='x')
+        self.wrapped(footer,text='各項加成比較；生效狀態不全時不顯示差額。').pack(fill='x')
+        totals_frame=ttk.Frame(footer,height=116);totals_frame.pack(fill='x');totals_frame.pack_propagate(False)
+        self.plan_totals=self.make_tree(totals_frame,['name','best','current','delta'],['屬性','建議','生效','差額'],[180,65,65,65],height=2)
+        self.wrapped(footer,text='分數是加權指標；加成合計不代表實際產量。雙擊建議可在持有庫查看。').pack(fill='x',pady=4)
+        self.plan_tree=self.make_tree(self.plan_tab,['slot','item','value'],['欄位','建議／狀態','最高值'],[65,225,85],height=5)
         self.plan_tree.bind('<Double-1>',self.open_plan_item)
-        self.wrapped(self.plan_tab,text='雙擊查看完整屬性；並列時優先沿用生效中藏品。').pack(fill='x',pady=6)
     def build_inventory(self):
         bar=ttk.Frame(self.inventory_tab);bar.pack(fill='x',pady=(0,6))
-        self.button(bar,'查看／編輯',self.edit_selected).pack(side='left',padx=(0,6))
+        self.button(bar,'編輯／補正',self.edit_selected).pack(side='left',padx=(0,6))
         self.button(bar,'回收同步',self.delete_selected).pack(side='left',padx=(0,6))
         self.button(bar,'刪除紀錄',self.manual_delete).pack(side='left')
-        self.inventory_filter=ttk.Combobox(self.inventory_tab,state='readonly',values=[self.t(v) for v in ('全部紀錄','待核對','已確認')],width=1)
-        self.inventory_filter.current(0);self.inventory_filter.pack(fill='x',pady=(0,6))
+        row=ttk.Frame(self.inventory_tab);row.pack(fill='x',pady=(0,6))
+        self.inventory_filter=ttk.Combobox(row,state='readonly',values=[self.t(v) for v in ('全部紀錄','待核對','已確認')],width=12)
+        self.inventory_filter.current(0);self.inventory_filter.pack(side='left',fill='x',expand=True)
         self.inventory_filter.bind('<<ComboboxSelected>>',lambda e:self.fill_inventory())
-        self.inv_tree=self.make_tree(self.inventory_tab,['label','state','quantity'],['類別／固定編號','判斷','件數'],[190,125,45],height=8)
-        for tag,color in [('keep','#e8f3eb'),('tie','#eaf0f7'),('review','#fff0d7'),('candidate','#f3f4f3')]:self.inv_tree.tag_configure(tag,background=color)
-        self.inv_tree.bind('<<TreeviewSelect>>',lambda e:self.refresh_recycle());self.inv_tree.bind('<Double-1>',lambda e:self.guard(self.edit_selected))
-        self.recycle_text=tk.StringVar(value=self.t('Ctrl 多選可檢查回收；刪除紀錄只清理助手資料。'))
-        self.wrapped(self.inventory_tab,textvariable=self.recycle_text).pack(fill='x',pady=8)
-        self.button(self.inventory_tab,'手動新增藏品',self.manual_item).pack(anchor='w')
+        self.show_inventory_detail=tk.BooleanVar(value=self.store.get_setting('inventory_detail',True))
+        ttk.Checkbutton(row,text=self.t('詳情'),variable=self.show_inventory_detail,command=self.toggle_inventory_detail).pack(side='left',padx=6)
+        footer=ttk.Frame(self.inventory_tab);footer.pack(side='bottom',fill='x')
+        self.recycle_text=tk.StringVar(value=self.t('單擊或上下鍵查看；Ctrl 多選檢查整批回收。'))
+        self.wrapped(footer,textvariable=self.recycle_text).pack(fill='x',pady=5)
+        self.button(footer,'手動新增藏品',self.manual_item).pack(anchor='w')
+        self.inventory_panes=ttk.Panedwindow(self.inventory_tab,orient='vertical');self.inventory_panes.pack(fill='both',expand=True)
+        listing=ttk.Frame(self.inventory_panes);self.inventory_panes.add(listing,weight=1)
+        self.inv_tree=self.make_tree(listing,['label','state','quantity'],['類別／固定編號','判斷','件數'],[175,140,45],height=4)
+        for tag,color in [('keep','#e8f3eb'),('multi','#e6edf8'),('tie','#eaf0f7'),('review','#fff0d7'),('candidate','#f3f4f3')]:self.inv_tree.tag_configure(tag,background=color)
+        self.inv_tree.bind('<<TreeviewSelect>>',lambda e:self.inventory_selection())
+        self.inv_tree.bind('<Double-1>',lambda e:self.inspect_inventory())
+        self.inventory_detail_frame=ttk.Frame(self.inventory_panes,padding=(0,5,0,0))
+        self.inventory_detail_heading=tk.StringVar(value=self.t('選取一件查看完整屬性'))
+        self.wrapped(self.inventory_detail_frame,textvariable=self.inventory_detail_heading).pack(fill='x')
+        self.inventory_stats=self.make_tree(self.inventory_detail_frame,['name','value'],['全部屬性','數值'],[290,85],height=3)
+        if self.show_inventory_detail.get():self.inventory_panes.add(self.inventory_detail_frame,weight=1)
+    def toggle_inventory_detail(self):
+        self.store.setting('inventory_detail',self.show_inventory_detail.get())
+        if self.show_inventory_detail.get():
+            if str(self.inventory_detail_frame) not in self.inventory_panes.panes():self.inventory_panes.add(self.inventory_detail_frame,weight=1)
+        elif str(self.inventory_detail_frame) in self.inventory_panes.panes():self.inventory_panes.forget(self.inventory_detail_frame)
+    def inventory_selection(self):
+        self.refresh_recycle();self.inspect_inventory()
+    def inspect_inventory(self):
+        selected=self.selected_records();self.inventory_stats.delete(*self.inventory_stats.get_children())
+        if len(selected)!=1:
+            self.inventory_detail_heading.set(self.t('選取一件查看完整屬性') if not selected else self.t('已多選；可檢查整批回收。'));return 'break'
+        item=selected[0]
+        self.inventory_detail_heading.set(self.t(item.label())+' · '+self.t(item.name or '名稱未讀到')+(' · '+self.t(item.quality) if item.quality else '')+(' · '+item.power if item.power else ''))
+        for stat in item.stats:self.inventory_stats.insert('','end',values=(self.t(stat.name),fmt(stat.value,stat.unit)))
+        return 'break'
     def build_settings(self):
         capture=ttk.LabelFrame(self.settings_tab,text=self.t('畫面擷取'),padding=8);capture.pack(fill='x')
         self.button(capture,'選取／重選遊戲區域',self.select_region).pack(anchor='w')
         self.region_label=self.wrapped(capture,text='尚未選區');self.region_label.pack(fill='x',pady=4)
         ttk.Checkbutton(capture,text=self.t('助手重疊時自動移到選區旁'),variable=self.auto_dock,command=lambda:self.store.setting('auto_dock',self.auto_dock.get())).pack(anchor='w')
-        ttk.Checkbutton(capture,text=self.t('視窗置頂'),variable=self.topmost,command=lambda:self.root.attributes('-topmost',self.topmost.get())).pack(anchor='w')
+        ttk.Checkbutton(capture,text=self.t('視窗置頂'),variable=self.topmost,command=lambda:self.guard(self.save_topmost)).pack(anchor='w')
         ttk.Checkbutton(self.settings_tab,text=self.t('清楚且重複一致的資料自動收錄'),variable=self.autosave,command=lambda:self.store.setting('autosave',self.autosave.get())).pack(anchor='w',pady=7)
         row=ttk.Frame(self.settings_tab);row.pack(fill='x')
         ttk.Label(row,text=self.t('介面語言')).pack(side='left',padx=(0,8));lang=ttk.Combobox(row,state='readonly',values=['繁體中文','简体中文'],width=12)
@@ -150,6 +186,8 @@ class App:
             row=ttk.Frame(self.settings_tab);row.pack(fill='x',pady=(8,0))
             for title,fn in pair:self.button(row,title,fn).pack(side='left',padx=(0,7))
         self.wrapped(self.settings_tab,text='擷取時會暫時隱藏重疊的助手視窗，不保存截圖。只在自己的藏品頁使用；遊戲移動或縮放後請重選區。').pack(fill='x',pady=10)
+    def save_topmost(self):
+        self.store.setting('topmost',self.topmost.get());self.root.attributes('-topmost',self.topmost.get())
     def switch_language(self,lang):
         if self.editor_open:raise ValueError(self.t('請先關閉核對視窗再切換語言'))
         for w in self.owned_windows[1:]:
@@ -160,7 +198,7 @@ class App:
         if not self.region:self.region_label.configure(text=self.t('尚未選取遊戲區域'));return
         r=self.region;self.region_label.configure(text=self.t('已選區：')+f"{r['width']} × {r['height']}"+self.t('；視窗移動或縮放後重選。'))
     def refresh(self):
-        self.items=self.store.items();self.item_map={i.id:i for i in self.items};self.draft_records=self.store.drafts();self.draft_map={i.draft_id:i for i in self.draft_records};self.definitions=self.store.definitions();self.advisor=Advisor(self.items,self.definitions);self.region_status()
+        self.items=self.store.items();self.item_map={i.id:i for i in self.items};self.draft_records=self.store.drafts();self.draft_map={i.draft_id:i for i in self.draft_records};self.definitions=self.store.definitions();self.advisor=Advisor(self.items,self.definitions);self.known_categories={i.name:i.category for i in self.items if i.confirmed and i.name};self.region_status()
         self.fill_inventory()
         old=self.goal.get();self.goal_defs=[(n,u) for (n,u),d in self.definitions.items() if d and any(i.confirmed and any((s.name,s.unit)==(n,u) for s in i.stats) for i in self.items)]
         values=[self.t(n)+(' (%)' if u else self.t('（固定數量）')) for n,u in self.goal_defs];self.goal['values']=values
@@ -171,6 +209,7 @@ class App:
         self.status.set(self.t('持有 ')+str(len(self.items))+self.t(' 組；待核對 ')+str(sum(not i.confirmed for i in self.items)+len(self.draft_records))+self.t(' 組。排名僅依已收錄資料。'))
         if self.current:self.show_comparison(self.current)
     def fill_inventory(self):
+        selection=self.inv_tree.selection();focus=self.inv_tree.focus();scroll=self.inv_tree.yview()
         self.inv_tree.delete(*self.inv_tree.get_children());mode=self.inventory_filter.current()
         for item in self.items:
             if mode==1 and item.confirmed:continue
@@ -179,25 +218,77 @@ class App:
         if mode!=2:
             for item in self.draft_records:
                 self.inv_tree.insert('','end',iid='d:'+str(item.draft_id),values=(self.t(item.label()),self.t('待核對草稿'),item.quantity),tags=('review',))
+        remaining=[key for key in selection if self.inv_tree.exists(key)]
+        if remaining:self.inv_tree.selection_set(remaining)
+        if focus and self.inv_tree.exists(focus):self.inv_tree.focus(focus)
+        if scroll:self.inv_tree.yview_moveto(scroll[0])
+        self.inventory_selection()
     def selected_records(self):
         selected=[]
         for key in self.inv_tree.selection():
             item=self.draft_map.get(int(key[2:])) if key.startswith('d:') else self.item_map.get(int(key))
             if item is not None:selected.append(item)
         return selected
+    def change_plan_mode(self):
+        self.store.setting('plan_mode',self.plan_mode.current());self.refresh_plan()
+    def configure_goals(self):
+        self.stop();win=self.own(tk.Toplevel(self.root));win.title(self.t('設定多用途'));win.geometry('490x500');win.transient(self.root)
+        body=ttk.Frame(win,padding=10);body.pack(fill='both',expand=True)
+        self.wrapped(body,text='選取百分比屬性並設定權重；1:1 表示等權合計，不保證兩項平均。固定數量使用單項專精。').pack(fill='x',pady=5)
+        choices=[(n,u) for n,u in self.goal_defs if u=='%'];choice=ttk.Combobox(body,state='readonly',values=[self.t(n) for n,u in choices]);choice.pack(fill='x')
+        if choices:choice.current(0)
+        weight=tk.StringVar(value='1');row=ttk.Frame(body);row.pack(fill='x',pady=5)
+        ttk.Label(row,text=self.t('權重')).pack(side='left');ttk.Entry(row,textvariable=weight,width=8).pack(side='left',padx=6)
+        goals=[dict(v) for v in self.plan_goals]
+        tree=self.make_tree(body,['name','weight'],['目標屬性','權重'],[315,90],height=6)
+        def refill():
+            tree.delete(*tree.get_children())
+            for idx,g in enumerate(goals):tree.insert('','end',iid=str(idx),values=(self.t(g['name']),g['weight']))
+        def add():
+            idx=choice.current()
+            if idx<0:raise ValueError(self.t('先收錄並核對百分比屬性'))
+            from .core import number
+            value=number(weight.get())
+            if Decimal(value)<=0:raise ValueError(self.t('權重必須大於 0'))
+            name,unit=choices[idx];goals[:]=[g for g in goals if (g['name'],g['unit'])!=(name,unit)];goals.append({'name':name,'unit':unit,'weight':value});refill()
+        def remove():
+            selected={int(i) for i in tree.selection()};goals[:]=[g for i,g in enumerate(goals) if i not in selected];refill()
+        def save():
+            self.advisor.weighted_plan([(g['name'],g['unit'],g['weight']) for g in goals])
+            self.plan_goals=goals;self.store.setting('plan_goals',goals);self.plan_mode.current(1);self.change_plan_mode();win.destroy()
+        self.button(row,'加入／更新',add).pack(side='left')
+        controls=ttk.Frame(body);controls.pack(fill='x',pady=6)
+        self.button(controls,'移除選取',remove).pack(side='left');self.button(controls,'儲存並分析',save).pack(side='right');refill()
     def refresh_plan(self):
-        self.plan_tree.delete(*self.plan_tree.get_children());self.plan_ids={};idx=self.goal.current()
-        if idx<0 or idx>=len(self.goal_defs):self.plan_summary.set(self.t('先收錄並核對藏品，再選擇目標屬性。'));return
-        name,unit=self.goal_defs[idx];plan=self.advisor.plan(name,unit);total=Decimal('0');switches=0;missing=0
+        self.plan_tree.delete(*self.plan_tree.get_children());self.plan_totals.delete(*self.plan_totals.get_children());self.plan_ids={}
+        multi=self.plan_mode.current()==1;self.goal.configure(state='disabled' if multi else 'readonly')
+        self.plan_tree.heading('value',text=self.t('分數' if multi else '最高值'))
+        if multi:
+            try:plan,totals,current,missing=self.advisor.weighted_plan([(g['name'],g['unit'],g['weight']) for g in self.plan_goals])
+            except ValueError as e:self.plan_summary.set(self.convert(str(e)));return
+            goals=[(g['name'],g['unit']) for g in self.plan_goals]
+            caption='、'.join(self.t(g['name'])+' ×'+str(g['weight']) for g in self.plan_goals[:2])
+            if len(self.plan_goals)>2:caption+=self.t('；共 ')+str(len(self.plan_goals))+self.t(' 項')
+        else:
+            idx=self.goal.current()
+            if idx<0 or idx>=len(self.goal_defs):self.plan_summary.set(self.t('先收錄並核對藏品，再選擇目標屬性。'));return
+            name,unit=self.goal_defs[idx];goals=[(name,unit)];plan=self.advisor.plan(name,unit)
+            totals={(name,unit):sum((Decimal(v) for v,_ in plan.values()),Decimal(0))};current={(name,unit):sum((Decimal(s.value) for i in self.items if i.confirmed and i.equipped and i.category in plan for s in i.stats if (s.name,s.unit)==(name,unit)),Decimal(0))};caption=self.t(name)
+        switches=0;missing=0
         for cat in self.store.categories():
             if cat not in plan:self.plan_tree.insert('','end',values=(self.t(cat),self.t('尚無已核對加成'),'—'));missing+=1;continue
-            value,winners=plan[cat];winner=winners[0];total+=Decimal(value);switches+=not winner.equipped
+            value,winners=plan[cat];winner=winners[0];switches+=not winner.equipped
             label=' / '.join(f'#{i.id:04d}' for i in winners)+self.t(' · 已生效' if winner.equipped else ' · 需替換')
-            rid=self.plan_tree.insert('','end',values=(self.t(cat),label,fmt(value,unit)));self.plan_ids[rid]=winner.id
-        self.plan_summary.set(self.t('已收錄加成合計 ')+fmt(total,unit)+self.t('；需替換 ')+str(switches)+self.t(' 欄，無資料／無加成 ')+str(missing)+self.t(' 欄。合計不代表實際效率提升。'))
+            rid=self.plan_tree.insert('','end',values=(self.t(cat),label,value if multi else fmt(value,goals[0][1])));self.plan_ids[rid]=winner.id
+        known=bool(plan) and all(any(i.confirmed and i.equipped and i.category==cat for i in self.items) for cat in plan)
+        for key in goals:
+            value=totals[key];actual=current[key]
+            self.plan_totals.insert('','end',values=(self.t(key[0]),fmt(value,key[1]) if plan else '—',fmt(actual,key[1]) if known else '—',fmt(value-actual,'pp' if key[1]=='%' else '',True) if known else '—'))
+        self.plan_summary.set(caption+'\n'+self.t('需替換 ')+str(switches)+self.t(' 欄；無資料／無加成 ')+str(missing)+self.t(' 欄。'))
     def open_plan_item(self,event=None):
         sel=self.plan_tree.selection()
-        if sel and sel[0] in self.plan_ids:self.open_item(self.item_map[self.plan_ids[sel[0]]])
+        if sel and sel[0] in self.plan_ids:
+            key=str(self.plan_ids[sel[0]]);self.notebook.select(self.inventory_tab);self.inventory_filter.current(0);self.fill_inventory();self.inv_tree.selection_set(key);self.inv_tree.focus(key);self.inv_tree.see(key);self.inspect_inventory()
     def choose_scan(self,event=None):
         if self.editor_open:return
         idx=self.result_choice.current()
@@ -206,7 +297,7 @@ class App:
         matched=next((i for i in self.items if i.fingerprint()==item.fingerprint()),None);compare_item=matched or item
         verdict=self.advisor.verdict(compare_item)
         self.item_heading.configure(text=self.t(compare_item.label() or '類別待核對')+(' · '+self.t(item.quality) if item.quality else '')+(' · '+item.power if item.power else ''))
-        self.verdict_label.configure(text=self.t(STATES[verdict]),foreground={'keep':'#245b39','tie':'#325980','candidate':'#48564b','review':'#8a560c'}[verdict])
+        self.verdict_label.configure(text=self.t(STATES[verdict]),foreground={'keep':'#245b39','tie':'#325980','candidate':'#48564b','review':'#8a560c','multi':'#325980'}[verdict])
         self.compare_tree.delete(*self.compare_tree.get_children());self.comparison_rows={}
         for row in self.advisor.compare(compare_item):
             rid=self.compare_tree.insert('','end',values=(self.t(row.stat.name),fmt(row.stat.value,row.stat.unit),fmt(row.best_other,row.stat.unit) if row.best_other is not None else '—'),tags=(row.state,));self.comparison_rows[rid]=row
@@ -253,16 +344,17 @@ class App:
     def edit_selected(self):
         sel=self.inv_tree.selection()
         if len(sel)!=1:raise ValueError(self.t('請選取一件要查看的藏品'))
-        self.open_item(self.selected_records()[0]);self.edit_current()
-    def manual_item(self):self.current=Item('','','','',[]);self.show_editor(self.current)
+        self.show_editor(self.selected_records()[0],from_inventory=True)
+    def manual_item(self):self.show_editor(Item('','','','',[]),from_inventory=self.notebook.select()==str(self.inventory_tab))
     def toggle_editor(self,force=None):
         if force is False:self.close_editor()
         elif self.current:self.show_editor(self.current)
     def close_editor(self):
+        if self.editor_open and getattr(self,'editor_from_inventory',False):self.current=self.editor_previous_current
         if self.editor_window and self.editor_window.winfo_exists():self.editor_window.destroy()
         self.editor_window=None;self.editor_open=False
-    def show_editor(self,item):
-        self.stop();self.close_editor();self.editor_open=True;self.current=item;self.edit_id=item.id;self.edit_draft_id=item.draft_id
+    def show_editor(self,item,from_inventory=False):
+        self.stop();self.close_editor();self.editor_previous_current=self.current;self.editor_from_inventory=from_inventory;self.editor_open=True;self.current=item;self.edit_id=item.id;self.edit_draft_id=item.draft_id
         matched=next((i for i in self.items if i.id==item.id),None)
         if matched:item.quantity=matched.quantity
         win=self.own(tk.Toplevel(self.root));self.editor_window=win;win.title(self.t('核對藏品資料'));win.geometry('520x610');win.minsize(450,560);win.geometry(f'+{max(0,self.root.winfo_x()+20)}+{max(0,self.root.winfo_y()+20)}');win.protocol('WM_DELETE_WINDOW',self.close_editor)
@@ -307,7 +399,7 @@ class App:
         if not confirmed:
             item.complete=False;item.source='manual-draft';item.warnings=[self.t('手動暫存，請核對完整屬性後確認。')]
             did=self.store.stage(item,raw,update_id=self.edit_draft_id)
-            self.close_editor();self.refresh();self.open_item(self.draft_map[did]);self.status.set(self.t('已保存待核對草稿 ')+self.t(self.draft_map[did].label()));return
+            self.finish_editor(draft_id=did);self.status.set(self.t('已保存待核對草稿 ')+self.t(self.draft_map[did].label()));return
         if not item.category or not item.stats:raise ValueError(self.t('需要擺放類別與至少一項完整屬性'))
         for stat in item.stats:
             if self.definitions.get((stat.name,stat.unit),0)==0:self.store.define(stat.name,stat.unit,1)
@@ -315,7 +407,14 @@ class App:
         else:
             matching=next((i for i in self.store.items() if i.fingerprint()==item.fingerprint()),None)
             item_id,_=self.store.save(item,confirmed=True,update_id=self.edit_id or (matching.id if matching else None))
-        self.close_editor();self.refresh();self.open_item(self.item_map[item_id]);self.status.set(self.t('已確認並保存 ')+self.t(self.item_map[item_id].label()))
+        self.finish_editor(item_id=item_id);self.status.set(self.t('已確認並保存 ')+self.t(self.item_map[item_id].label()))
+    def finish_editor(self,item_id=None,draft_id=None):
+        inventory=self.editor_from_inventory;self.close_editor();self.refresh()
+        item=self.draft_map[draft_id] if draft_id is not None else self.item_map[item_id]
+        if inventory:
+            self.inventory_filter.current(0);self.fill_inventory();key='d:'+str(draft_id) if draft_id is not None else str(item_id)
+            self.inv_tree.selection_set(key);self.inv_tree.focus(key);self.inv_tree.see(key);self.inspect_inventory();self.notebook.select(self.inventory_tab)
+        else:self.open_item(item)
     def show_scan_text(self):
         self.stop()
         if self.current is not None and self.current.draft_id is not None:
@@ -352,12 +451,12 @@ class App:
         counts=self.selected_counts()
         if draft_count:
             self.recycle_text.set(self.t('選取包含 ')+str(draft_count)+self.t(' 筆待核對草稿，不能作為可回收依據；可用刪除紀錄清理。'));return
-        if not counts:return
+        if not counts:self.recycle_text.set(self.t('單擊或上下鍵查看；Ctrl 多選檢查整批回收。'));return
         risks=self.advisor.recycle_risks(counts);parts=[]
         for i,reasons in risks.items():
-            if reasons:parts.append(f'#{i:04d}: '+self.convert('、'.join({'review':'資料待核對','equipped':'目前生效中'}.get(r,r) for r in reasons)))
-        if parts:self.recycle_text.set(self.t('回收後可能失去最佳值／需核對：')+'；'.join(parts))
-        else:self.recycle_text.set(self.t('整批各項已知用途都有其他保留藏品替代；仍須自行確認材料、交易等用途。'))
+            if reasons:parts.append(f'#{i:04d}: '+self.convert('、'.join({'review':'資料待核對','equipped':'目前生效中','multi':'無單件完整替代／多用途保留'}.get(r,r) for r in reasons)))
+        if parts:self.recycle_text.set(self.t('回收後可能失去最佳值／需核對：')+'；'.join(parts[:2])+(self.t('；另有 ')+str(len(parts)-2)+self.t(' 組提醒') if len(parts)>2 else ''))
+        else:self.recycle_text.set(self.t('每件均有同欄位單件完整替代；仍須自行確認材料、交易等用途。'))
     def delete_selected(self):
         if any(i.draft_id is not None for i in self.selected_records()):raise ValueError(self.t('待核對草稿請使用刪除紀錄；請先核對物品身分再同步遊戲回收。'))
         counts=self.selected_counts()
@@ -433,7 +532,7 @@ class App:
         if answer!=marker:raise ValueError(self.t('確認文字不符，沒有刪除任何資料。'))
         self.store.clear(reset_rules=reset,reset_settings=reset)
         if reset:
-            self.region=None;self.autosave.set(True);self.auto_dock.set(True);self.topmost.set(False);self.root.attributes('-topmost',False)
+            self.region=None;self.plan_goals=[];self.plan_mode.current(0);self.autosave.set(True);self.auto_dock.set(True);self.topmost.set(False);self.root.attributes('-topmost',False)
         self.reset_preview();self.refresh();self.refresh_database_summary()
         self.status.set(self.t('資料庫已重設，請重新選區；編號已歸零。' if reset else '藏品和草稿已清空，設定保留；編號已歸零。'))
     def ensure_idle(self):
@@ -453,10 +552,10 @@ class App:
                 if old[0]=='capture':old[1].cancelled=True;old[1].finish(error=RuntimeError('Capture cancelled'))
             except queue.Empty:break
         self.worker=threading.Thread(target=work,daemon=True);self.worker.start();self.worker_ui()
-    def category_map(self):return NAME_CATEGORIES|{i.name:i.category for i in self.store.items() if i.name}
+    def category_map(self):return NAME_CATEGORIES|{i.name:i.category for i in self.store.items() if i.confirmed and i.name}
     def run_image(self,image,source,mapping):
         with self.engine_lock:lines=self.engine.recognize(image)
-        result=parse(lines,mapping.get)
+        result=parse(lines,(mapping|self.known_categories).get)
         for i in result.items:i.source=source if source=='import' else result.mode
         return result
     def capture_once(self):

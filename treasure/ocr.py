@@ -154,6 +154,17 @@ def parse(lines:list[Line],category_for_name=None):
         complete=bool(stats) and not (unpaired or missing_labels or bad_numbers or hidden) and expected is not None and len(stats)==expected and len({(s.name,s.unit) for s in stats})==len(stats)
         equipped=(idx==0 and mode=='compare') or (mode=='detail' and any(l.text=='卸下' for l in after))
         items.append(Item(category,name,quality,power,stats,equipped,min(scores),warnings,mode,complete=complete))
+    if mode=='compare' and any(l.text=='替换藏品' for l in lines) and len(items)==2:
+        categories={i.category for i in items if i.category}
+        if len(categories)==1:
+            category=next(iter(categories))
+            for item,column in zip(items,diagnostics['columns']):
+                if not item.category:
+                    item.category=category
+                    item.warnings=[w for w in item.warnings if w!='擺放類別未讀到，請在核對頁選擇']
+                    column['missing_category']=False;column['category_source']='same_replacement_slot'
+        elif len(categories)>1:
+            for item in items:item.warnings.append('替換兩側類別不一致，請核對欄位類別。')
     if not items and not messages:messages.append('找到屬性面板，但尚無可配對的屬性；請完整框選左側名稱與右側數值。')
     return Scan(mode,items,messages,text,diagnostics)
 

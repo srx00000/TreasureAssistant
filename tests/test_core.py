@@ -32,7 +32,7 @@ class InventoryTests(unittest.TestCase):
         tid=self.store.save(target,confirmed=True)[0]
         self.add('金器','3');self.add('金器','2','建造速度')
         item=next(i for i in self.store.items() if i.id==tid)
-        self.assertEqual(self.advisor().verdict(item),'candidate')
+        self.assertEqual(self.advisor().verdict(item),'multi')
     def test_batch_cannot_remove_both_tied_best(self):
         i=self.add(value='5');j=self.store.save(Item('偶人','different','传奇','9999',[Stat('木材采集速度','5')]),confirmed=True)[0]
         self.assertFalse(self.advisor().recycle_risks({i:1})[i])

@@ -342,8 +342,47 @@ class Advisor:
         rows=self.compare(item)
         if not rows or any(r.state=='unknown' for r in rows):return 'review'
         if any(r.state=='unique' for r in rows):return 'keep'
+        if not self.dominators(item):return 'multi'
         if any(r.state=='tie' for r in rows):return 'tie'
         return 'candidate'
+    def dominators(self,item,excluded=None):
+        """One retained item must cover all effects, including any added drawbacks."""
+        excluded=set(excluded or [])
+        current={(s.name,s.unit):Decimal(s.value) for s in item.stats}
+        if not current or any(not self.definitions.get(k) for k in current):return []
+        result=[]
+        for other in self.items:
+            if not other.confirmed or other.category!=item.category or other.id==item.id or other.id in excluded:continue
+            values={(s.name,s.unit):Decimal(s.value) for s in other.stats}
+            if not current.keys()<=values.keys():continue
+            keys=current.keys()|values.keys()
+            if all(self.definitions.get(k,0) and (values.get(k,Decimal(0))-current.get(k,Decimal(0)))*self.definitions[k]>=0 for k in keys):result.append(other.id)
+        return result
+    def weighted_plan(self,goals):
+        """Exact additive optimum: independent slots, explicit weights, percent effects."""
+        parsed=[];seen=set()
+        for name,unit,weight in goals:
+            key=(norm(name),unit);weight=Decimal(number(weight))
+            if key in seen or weight<=0:raise ValueError('屬性不可重複，權重必須大於 0')
+            if not self.definitions.get(key,0):raise ValueError('請先核對目標屬性的比較方向')
+            if unit!='%':raise ValueError('多用途加權目前只支援百分比屬性，固定數量請用單項專精')
+            seen.add(key);parsed.append((key,weight))
+        if not parsed:raise ValueError('請先設定至少一項多用途目標')
+        groups={}
+        for item in self.items:
+            if item.confirmed:groups.setdefault(item.category,[]).append(item)
+        result={};totals={key:Decimal(0) for key,_ in parsed};current=dict(totals);missing=[]
+        for category,items in groups.items():
+            values={i.id:{(s.name,s.unit):Decimal(s.value) for s in i.stats} for i in items}
+            if not any(any(key in values[i.id] for key,_ in parsed) for i in items):missing.append(category);continue
+            def score(i):return sum((values[i.id].get(key,Decimal(0))*weight*self.definitions[key] for key,weight in parsed),Decimal(0))
+            best=max(score(i) for i in items)
+            winners=sorted((i for i in items if score(i)==best),key=lambda i:(not i.equipped,i.id or 0))
+            result[category]=(number(best),winners)
+            for key,_ in parsed:
+                totals[key]+=values[winners[0].id].get(key,Decimal(0))
+                current[key]+=next((values[i.id].get(key,Decimal(0)) for i in items if i.equipped),Decimal(0))
+        return result,totals,current,missing
     def plan(self,name,unit):
         direction=self.definitions.get((name,unit),0)
         if not direction:return {}
@@ -370,5 +409,6 @@ class Advisor:
             if item.id in excluded:
                 for r in self.compare(item,excluded):
                     if r.state in ('unique','unknown'):reasons.append(r.stat.name)
+                if item.confirmed and not self.dominators(item,excluded):reasons.append('multi')
             risks[item.id]=reasons
         return risks
