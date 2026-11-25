@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 from statistics import median
-from .core import Item, Stat, norm, DEFAULT_CATEGORIES, NAME_CATEGORIES
+from .core import Item, Stat, norm, DEFAULT_CATEGORIES, NAME_CATEGORIES, category_group
 
 @dataclass
 class Line:
@@ -31,6 +31,15 @@ class Scan:
 NUM = re.compile(r'([+\-]?\d+(?:[.,]\d+)?)\s*(%?)')
 QUALITIES=('普通','精良','稀有','史诗','传奇')
 
+def preferred_preview(scan,previous_scan=None,previous_index=-1):
+    if not scan.items:return -1
+    if scan.mode!='compare':return 0
+    right=next((i for i,item in enumerate(scan.items) if item.screen_side=='right'),min(1,len(scan.items)-1))
+    if previous_scan and previous_scan.mode=='compare' and 0<=previous_index<len(scan.items) and len(previous_scan.items)==len(scan.items):
+        old_right=next((i for i,item in enumerate(previous_scan.items) if item.screen_side=='right'),min(1,len(previous_scan.items)-1))
+        if previous_scan.items[old_right].fingerprint()==scan.items[right].fingerprint():return previous_index
+    return right
+
 def result_lines(results):
     lines=[]
     for box,text,score in results or []:
@@ -50,6 +59,9 @@ def parse(lines:list[Line],category_for_name=None):
         return Scan('blocked',[],['偵測到助手介面遮擋；請重新擷取，不會寫入持有庫。'],text,{'self_capture_markers':hits})
     headers=[l for l in lines if l.text=='藏品属性']
     if not headers:
+        categories=sorted({l.text for l in lines if l.text in DEFAULT_CATEGORIES})
+        if len(categories)>=2:
+            return Scan('overview',[],['已識別藏品總覽欄位；請打開單件詳情或替換畫面以收錄完整屬性。'],text,{'categories':categories,'groups':sorted({category_group(c) for c in categories})})
         numbers=sum(bool(NUM.fullmatch(l.text)) for l in lines)
         reason='讀到數值，但未找到完整「藏品屬性」標題；可能被視窗遮擋或選區裁切，請重新框選完整面板。' if numbers else '未找到藏品詳情；請在遊戲打開單件詳情、替換或回收預覽。'
         return Scan('none',[],[reason],text,{'numeric_lines':numbers})
@@ -69,6 +81,8 @@ def parse(lines:list[Line],category_for_name=None):
         quality_lines=[l for l in above if any(l.text.startswith(q) for q in QUALITIES)]
         qline=min(quality_lines,key=lambda l:abs(l.y-(header.y-55))) if quality_lines else None
         quality=next((q for q in QUALITIES if qline and qline.text.startswith(q)),'')
+        level_lines=[l for l in above if header.y-l.y<140 and re.fullmatch(r'(?:等级[:：]?|Lv\.?|LV\.?|lv\.?)[0-9]{1,4}',l.text)]
+        level=re.search(r'[0-9]+',level_lines[0].text).group() if len(level_lines)==1 else ''
         name=qline.text[len(quality):] if qline else ''
         if qline and not name:
             peers=[l for l in above if abs(l.y-qline.y)<qline.height and l is not qline and l.text not in ignored and not re.search(r'\d',l.text)]
@@ -78,7 +92,7 @@ def parse(lines:list[Line],category_for_name=None):
                    and re.search(r'[\u4e00-\u9fff]',l.text) and not re.search(r'\d',l.text) and header.y-l.y<130]
             if names:name=min(names,key=lambda l:abs(l.y-(header.y-55))).text
         name_y=qline.y if qline else header.y-60
-        power_lines=[l for l in above if re.fullmatch(r'[^\d]{0,2}\d{4,12}',l.text) and l.y>name_y]
+        power_lines=[l for l in above if l not in level_lines and re.fullmatch(r'[^\d]{0,2}\d{4,12}',l.text) and l.y>name_y]
         power=re.sub(r'\D','',min(power_lines,key=lambda l:abs(l.y-(header.y-25))).text) if power_lines else ''
         category=''
         badges=[l for l in above if l.text in DEFAULT_CATEGORIES and header.y-l.y<160]
@@ -153,7 +167,7 @@ def parse(lines:list[Line],category_for_name=None):
             if not (power and (name or category)):continue
         complete=bool(stats) and not (unpaired or missing_labels or bad_numbers or hidden) and expected is not None and len(stats)==expected and len({(s.name,s.unit) for s in stats})==len(stats)
         equipped=(idx==0 and mode=='compare') or (mode=='detail' and any(l.text=='卸下' for l in after))
-        items.append(Item(category,name,quality,power,stats,equipped,min(scores),warnings,mode,complete=complete))
+        items.append(Item(category,name,quality,power,stats,equipped,min(scores),warnings,mode,complete=complete,level=level,screen_side=('left' if idx==0 else 'right') if mode=='compare' else ''))
     if mode=='compare' and any(l.text=='替换藏品' for l in lines) and len(items)==2:
         categories={i.category for i in items if i.category}
         if len(categories)==1:

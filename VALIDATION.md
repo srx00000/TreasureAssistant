@@ -1,4 +1,17 @@
-# Validation — v0.5.0
+# Validation — v0.6.0
+
+## v0.6.0 verification
+
+- 122 unit and regression tests passed on Python 3.12 (95 existing plus 27 new).
+- Additive SQLite migration verifies stable existing IDs, blank-level fingerprints, quantities and settings; optional levels round-trip through inventory, drafts and JSON v3. Existing JSON v1/v2 imports remain supported.
+- Duplicate handling covers exact partial rereads, conservative typo hints, ambiguous candidates, changed values/units/scopes, alias adoption and restart, target edits/deletion, stale acceptance rejection, manual draft protection, correcting a suspected draft without losing quantities, and clearing alias rows.
+- Catalog tests cover twelve slots, two explicit groups, existing-slot preservation and separate equipped state. Preview tests cover right-first selection, preserving manual left selection on the same candidate, and returning right on a changed candidate. Overview screens do not create incomplete inventory records.
+- Read-only removal impact tests cover per-slot attribute losses, lower-is-better rules, unknown/missing alternatives, selected-scope weighted scores, partial quantities and no database mutation. Existing conservative recycling policy is unchanged.
+- Traditional/simplified Tk integration checks actual row add/update/delete and save of the last edit, name/quality/level persistence, right-candidate preview behavior, suspected-record adoption with no repeated draft or count increment, group filters and restart, permanent separated counts, JSON v3 import/export and read-only impact inspection without stopping monitoring or changing tabs.
+- Main action buttons fit at 470x640 and 430x600; editor and inventory layouts were visually reviewed. Existing inline-inventory, live-worker quick-confirm and database-management GUI workflows were rerun. Actual RapidOCR capture integration was rerun with auto-docking and temporary-hide fallback, including continuous and one-shot captures and no saved screenshots.
+- QA ran on Linux virtual displays; Windows/Taobao DPI, foreground behavior, actual topmost behavior and window restoration still require Windows testing. Dependency pins are unchanged. User screenshots, inventories and QA captures are not included in source changes.
+
+## Earlier verification
 
 - 95 unit and regression tests passed (Python 3.12).
 - New multi-goal tests verify exact additive weighted results against exhaustive slot combinations, priority changes, decimal precision, lower-is-better rules, separate units, missing targets, unknown directions, unconfirmed exclusion, equipped tie preference and per-goal totals.

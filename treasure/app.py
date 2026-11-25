@@ -11,12 +11,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from decimal import Decimal
 from difflib import SequenceMatcher
-from .core import Store, Advisor, Item, Stat, norm, traditional, fmt, NAME_CATEGORIES
-from .ocr import Engine, parse
+from .core import Store, Advisor, Item, Stat, norm, traditional, fmt, NAME_CATEGORIES, CATEGORY_GROUPS, category_group
+from .ocr import Engine, parse, preferred_preview
+from .widgets import StatRows
 from .capture import overlaps, safe_position, request_frame
 
 APP_ROOT=Path(__file__).resolve().parent.parent
-VERSION='0.5.0'
+VERSION='0.6.0'
 STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對','multi':'多用途保留'}
 ROW_STATES={'unique':'本欄位最高／唯一','tie':'並列最高','lower':'已有較高值','unknown':'比較規則待核對'}
 
@@ -103,7 +104,7 @@ class App:
     def build_scan(self):
         self.result_choice=ttk.Combobox(self.scan_tab,state='readonly',values=[],width=1);self.result_choice.pack(fill='x')
         self.result_choice.bind('<<ComboboxSelected>>',self.choose_scan)
-        self.item_heading=ttk.Label(self.scan_tab,text=self.t('等待遊戲藏品詳情'),font=(self.font,10,'bold'));self.item_heading.pack(anchor='w',pady=(8,2))
+        self.item_heading=self.wrapped(self.scan_tab,text='等待遊戲藏品詳情');self.item_heading.configure(font=(self.font,10,'bold'));self.item_heading.pack(anchor='w',pady=(8,2))
         self.verdict_label=ttk.Label(self.scan_tab,text=self.t('等待辨識'),style='Headline.TLabel');self.verdict_label.pack(anchor='w',pady=(0,5))
         self.scan_notice=tk.StringVar();self.wrapped(self.scan_tab,textvariable=self.scan_notice).pack(fill='x',pady=(0,6))
         footer=ttk.Frame(self.scan_tab);footer.pack(side='bottom',fill='x')
@@ -114,7 +115,8 @@ class App:
         self.compare_tree.bind('<<TreeviewSelect>>',lambda e:self.show_attribute_detail())
         bar=ttk.Frame(footer);bar.pack(fill='x')
         self.button(bar,'確認本件',self.confirm_current).pack(side='left',padx=(0,7))
-        self.button(bar,'編輯／補正',self.edit_current).pack(side='left')
+        self.button(bar,'編輯／補正',self.edit_current).pack(side='left',padx=(0,7))
+        self.reuse_button=self.button(bar,'沿用既有',self.reuse_existing);self.reuse_button.pack(side='left');self.reuse_button.configure(state='disabled')
         self.wrapped(footer,text='確認即視為已核對完整屬性；新屬性預設越高越好。').pack(fill='x',pady=(5,0))
     def build_plan(self):
         bar=ttk.Frame(self.plan_tab);bar.pack(fill='x')
@@ -122,6 +124,7 @@ class App:
         self.plan_mode.current(1 if self.store.get_setting('plan_mode',0)==1 else 0);self.plan_mode.pack(side='left')
         self.plan_mode.bind('<<ComboboxSelected>>',lambda e:self.change_plan_mode())
         self.button(bar,'設定多用途',self.configure_goals).pack(side='left',padx=7)
+        self.plan_group=ttk.Combobox(self.plan_tab,state='readonly',values=[self.t(g) for g in CATEGORY_GROUPS]+[self.t('自訂'),self.t('全部組別（需確認同時生效）')]);self.plan_group.current(self.store.get_setting('plan_group',0));self.plan_group.pack(fill='x',pady=(6,0));self.plan_group.bind('<<ComboboxSelected>>',lambda e:self.change_plan_group())
         self.goal=ttk.Combobox(self.plan_tab,state='readonly',width=1);self.goal.pack(fill='x',pady=(6,4));self.goal.bind('<<ComboboxSelected>>',lambda e:self.refresh_plan())
         self.plan_summary=tk.StringVar();self.wrapped(self.plan_tab,textvariable=self.plan_summary).pack(fill='x',pady=4)
         footer=ttk.Frame(self.plan_tab);footer.pack(side='bottom',fill='x')
@@ -139,16 +142,21 @@ class App:
         row=ttk.Frame(self.inventory_tab);row.pack(fill='x',pady=(0,6))
         self.inventory_filter=ttk.Combobox(row,state='readonly',values=[self.t(v) for v in ('全部紀錄','待核對','已確認')],width=12)
         self.inventory_filter.current(0);self.inventory_filter.pack(side='left',fill='x',expand=True)
+        self.inventory_group=ttk.Combobox(row,state='readonly',values=[self.t('全部組別')]+[self.t(g) for g in CATEGORY_GROUPS]+[self.t('自訂')],width=10);self.inventory_group.current(0);self.inventory_group.pack(side='left',padx=4);self.inventory_group.bind('<<ComboboxSelected>>',lambda e:self.fill_inventory())
         self.inventory_filter.bind('<<ComboboxSelected>>',lambda e:self.fill_inventory())
         self.show_inventory_detail=tk.BooleanVar(value=self.store.get_setting('inventory_detail',True))
         ttk.Checkbutton(row,text=self.t('詳情'),variable=self.show_inventory_detail,command=self.toggle_inventory_detail).pack(side='left',padx=6)
+        self.inventory_summary=tk.StringVar();self.wrapped(self.inventory_tab,textvariable=self.inventory_summary).pack(fill='x',pady=(0,4))
         footer=ttk.Frame(self.inventory_tab);footer.pack(side='bottom',fill='x')
         self.recycle_text=tk.StringVar(value=self.t('單擊或上下鍵查看；Ctrl 多選檢查整批回收。'))
         self.wrapped(footer,textvariable=self.recycle_text).pack(fill='x',pady=5)
-        self.button(footer,'手動新增藏品',self.manual_item).pack(anchor='w')
+        actions=ttk.Frame(footer);actions.pack(fill='x')
+        self.button(actions,'手動新增',self.manual_item).pack(side='left',padx=(0,5))
+        self.button(actions,'整理誤讀',self.organize_pending).pack(side='left',padx=(0,5))
+        self.button(actions,'用途影響',self.show_tradeoffs).pack(side='left')
         self.inventory_panes=ttk.Panedwindow(self.inventory_tab,orient='vertical');self.inventory_panes.pack(fill='both',expand=True)
         listing=ttk.Frame(self.inventory_panes);self.inventory_panes.add(listing,weight=1)
-        self.inv_tree=self.make_tree(listing,['label','state','quantity'],['類別／固定編號','判斷','件數'],[175,140,45],height=4)
+        self.inv_tree=self.make_tree(listing,['label','rank','state','quantity'],['藏品名稱／編號','品階／等級','判斷','件數'],[160,85,95,35],height=4)
         for tag,color in [('keep','#e8f3eb'),('multi','#e6edf8'),('tie','#eaf0f7'),('review','#fff0d7'),('candidate','#f3f4f3')]:self.inv_tree.tag_configure(tag,background=color)
         self.inv_tree.bind('<<TreeviewSelect>>',lambda e:self.inventory_selection())
         self.inv_tree.bind('<Double-1>',lambda e:self.inspect_inventory())
@@ -157,6 +165,8 @@ class App:
         self.wrapped(self.inventory_detail_frame,textvariable=self.inventory_detail_heading).pack(fill='x')
         self.inventory_stats=self.make_tree(self.inventory_detail_frame,['name','value'],['全部屬性','數值'],[290,85],height=3)
         if self.show_inventory_detail.get():self.inventory_panes.add(self.inventory_detail_frame,weight=1)
+    def item_description(self,item):
+        return self.t(item.label())+' · '+self.t(category_group(item.category))+'/'+self.t(item.category or '類別待核對')+' · '+self.t(item.quality or '品階未知')+(' Lv.'+item.level if item.level else '')+(' · '+item.power if item.power else '')
     def toggle_inventory_detail(self):
         self.store.setting('inventory_detail',self.show_inventory_detail.get())
         if self.show_inventory_detail.get():
@@ -169,7 +179,7 @@ class App:
         if len(selected)!=1:
             self.inventory_detail_heading.set(self.t('選取一件查看完整屬性') if not selected else self.t('已多選；可檢查整批回收。'));return 'break'
         item=selected[0]
-        self.inventory_detail_heading.set(self.t(item.label())+' · '+self.t(item.name or '名稱未讀到')+(' · '+self.t(item.quality) if item.quality else '')+(' · '+item.power if item.power else ''))
+        self.inventory_detail_heading.set(self.item_description(item)+(self.t('；疑似重複 #')+f'{item.suspected_id:04d}' if item.suspected_id else ''))
         for stat in item.stats:self.inventory_stats.insert('','end',values=(self.t(stat.name),fmt(stat.value,stat.unit)))
         return 'break'
     def build_settings(self):
@@ -211,17 +221,24 @@ class App:
     def fill_inventory(self):
         selection=self.inv_tree.selection();focus=self.inv_tree.focus();scroll=self.inv_tree.yview()
         self.inv_tree.delete(*self.inv_tree.get_children());mode=self.inventory_filter.current()
+        groups=[None]+list(CATEGORY_GROUPS)+['自订'];group=groups[self.inventory_group.current()]
+        def visible(i):return group is None or category_group(i.category)==group
+        def rank(i):return self.t(i.quality or '—')+('/'+i.level if i.level else '')
         for item in self.items:
+            if not visible(item):continue
             if mode==1 and item.confirmed:continue
             if mode==2 and not item.confirmed:continue
-            state=self.advisor.verdict(item);self.inv_tree.insert('','end',iid=str(item.id),values=(self.t(item.label()),self.t(STATES[state]),item.quantity),tags=(state,))
+            state=self.advisor.verdict(item);self.inv_tree.insert('','end',iid=str(item.id),values=(self.t(item.label()),rank(item),self.t(STATES[state]),item.quantity),tags=(state,))
         if mode!=2:
             for item in self.draft_records:
-                self.inv_tree.insert('','end',iid='d:'+str(item.draft_id),values=(self.t(item.label()),self.t('待核對草稿'),item.quantity),tags=('review',))
+                if not visible(item):continue
+                self.inv_tree.insert('','end',iid='d:'+str(item.draft_id),values=(self.t(item.label()),rank(item),self.t('疑似重複' if item.suspected_id else '待核對草稿'),item.quantity),tags=('review',))
         remaining=[key for key in selection if self.inv_tree.exists(key)]
         if remaining:self.inv_tree.selection_set(remaining)
         if focus and self.inv_tree.exists(focus):self.inv_tree.focus(focus)
         if scroll:self.inv_tree.yview_moveto(scroll[0])
+        counts=self.store.counts()
+        self.inventory_summary.set(self.t('已確認持有 ')+str(counts['confirmed_quantity'])+self.t(' 件／')+str(counts['confirmed_groups'])+self.t(' 組；待核對 ')+str(counts['pending'])+self.t(' 筆（疑似重複 ')+str(counts['suspected'])+self.t('）。篩選顯示 ')+str(len(self.inv_tree.get_children()))+self.t(' 筆。'))
         self.inventory_selection()
     def selected_records(self):
         selected=[]
@@ -229,6 +246,11 @@ class App:
             item=self.draft_map.get(int(key[2:])) if key.startswith('d:') else self.item_map.get(int(key))
             if item is not None:selected.append(item)
         return selected
+    def change_plan_group(self):
+        self.store.setting('plan_group',self.plan_group.current());self.refresh_plan()
+    def plan_scope(self):
+        groups=list(CATEGORY_GROUPS)+['自订'];idx=self.plan_group.current()
+        return None if idx==len(groups) else groups[idx]
     def change_plan_mode(self):
         self.store.setting('plan_mode',self.plan_mode.current());self.refresh_plan()
     def configure_goals(self):
@@ -261,10 +283,11 @@ class App:
         self.button(controls,'移除選取',remove).pack(side='left');self.button(controls,'儲存並分析',save).pack(side='right');refill()
     def refresh_plan(self):
         self.plan_tree.delete(*self.plan_tree.get_children());self.plan_totals.delete(*self.plan_totals.get_children());self.plan_ids={}
+        scope=self.plan_scope();advisor=Advisor([i for i in self.items if scope is None or category_group(i.category)==scope],self.definitions)
         multi=self.plan_mode.current()==1;self.goal.configure(state='disabled' if multi else 'readonly')
         self.plan_tree.heading('value',text=self.t('分數' if multi else '最高值'))
         if multi:
-            try:plan,totals,current,missing=self.advisor.weighted_plan([(g['name'],g['unit'],g['weight']) for g in self.plan_goals])
+            try:plan,totals,current,missing=advisor.weighted_plan([(g['name'],g['unit'],g['weight']) for g in self.plan_goals])
             except ValueError as e:self.plan_summary.set(self.convert(str(e)));return
             goals=[(g['name'],g['unit']) for g in self.plan_goals]
             caption='、'.join(self.t(g['name'])+' ×'+str(g['weight']) for g in self.plan_goals[:2])
@@ -272,10 +295,11 @@ class App:
         else:
             idx=self.goal.current()
             if idx<0 or idx>=len(self.goal_defs):self.plan_summary.set(self.t('先收錄並核對藏品，再選擇目標屬性。'));return
-            name,unit=self.goal_defs[idx];goals=[(name,unit)];plan=self.advisor.plan(name,unit)
+            name,unit=self.goal_defs[idx];goals=[(name,unit)];plan=advisor.plan(name,unit)
             totals={(name,unit):sum((Decimal(v) for v,_ in plan.values()),Decimal(0))};current={(name,unit):sum((Decimal(s.value) for i in self.items if i.confirmed and i.equipped and i.category in plan for s in i.stats if (s.name,s.unit)==(name,unit)),Decimal(0))};caption=self.t(name)
         switches=0;missing=0
         for cat in self.store.categories():
+            if scope is not None and category_group(cat)!=scope:continue
             if cat not in plan:self.plan_tree.insert('','end',values=(self.t(cat),self.t('尚無已核對加成'),'—'));missing+=1;continue
             value,winners=plan[cat];winner=winners[0];switches+=not winner.equipped
             label=' / '.join(f'#{i.id:04d}' for i in winners)+self.t(' · 已生效' if winner.equipped else ' · 需替換')
@@ -294,14 +318,16 @@ class App:
         idx=self.result_choice.current()
         if 0<=idx<len(self.pending):self.current=self.pending[idx];self.show_comparison(self.current)
     def show_comparison(self,item):
-        matched=next((i for i in self.items if i.fingerprint()==item.fingerprint()),None);compare_item=matched or item
+        matched=self.item_map.get(item.id) if item.id is not None and item.draft_id is None else next((i for i in self.items if i.fingerprint()==item.fingerprint()),None);compare_item=matched or item
         verdict=self.advisor.verdict(compare_item)
-        self.item_heading.configure(text=self.t(compare_item.label() or '類別待核對')+(' · '+self.t(item.quality) if item.quality else '')+(' · '+item.power if item.power else ''))
+        self.item_heading.configure(text=self.item_description(compare_item))
+        self.reuse_button.configure(state='normal' if item.suspected_id in self.item_map else 'disabled')
         self.verdict_label.configure(text=self.t(STATES[verdict]),foreground={'keep':'#245b39','tie':'#325980','candidate':'#48564b','review':'#8a560c','multi':'#325980'}[verdict])
         self.compare_tree.delete(*self.compare_tree.get_children());self.comparison_rows={}
         for row in self.advisor.compare(compare_item):
             rid=self.compare_tree.insert('','end',values=(self.t(row.stat.name),fmt(row.stat.value,row.stat.unit),fmt(row.best_other,row.stat.unit) if row.best_other is not None else '—'),tags=(row.state,));self.comparison_rows[rid]=row
-        if compare_item.confirmed:self.scan_notice.set(self.t('本件已確認；可繼續辨識其他藏品。'))
+        if item.observation_note:self.scan_notice.set(self.t(item.observation_note))
+        elif compare_item.confirmed:self.scan_notice.set(self.t('本件已確認；可繼續辨識其他藏品。'))
         elif item.warnings:self.scan_notice.set(self.convert(item.warnings[0])+self.t('；可用編輯／補正處理。'))
         else:self.scan_notice.set(self.t('對照完整屬性後可按「確認本件」。'))
         self.comparison_detail.set(self.t('選取屬性可查看排名、差距與比較對象。'))
@@ -314,27 +340,36 @@ class App:
             line+=self.t('；差距 ')+fmt(delta,' 個百分點' if r.stat.unit=='%' else '',True)+self.t('；比較 ')+', '.join(f'#{i:04d}' for i in r.alternatives)
         self.comparison_detail.set(line)
     def display_scan(self,scan):
-        previous=self.current.fingerprint() if self.current is not None else None
+        previous_scan=self.last_scan;previous_index=self.result_choice.current()
         self.last_scan=scan;self.pending=scan.items
         labels=[]
         for idx,item in enumerate(scan.items):
-            side=self.t('左／生效' if idx==0 else '右／候選') if scan.mode=='compare' else self.t('預覽')
-            labels.append(side+' · '+self.t(item.category or '類別待核對')+(' · '+item.power if item.power else ''))
+            side=self.t('左／生效' if (item.screen_side or ('left' if idx==0 else 'right'))=='left' else '右／新候選') if scan.mode=='compare' else self.t('預覽')
+            labels.append(side+' · '+self.t(item.name or item.category or '名稱待核對')+(' · '+item.power if item.power else ''))
         self.result_choice['values']=labels
         warnings=list(dict.fromkeys(scan.messages+[w for i in scan.items for w in i.warnings]))
         self.scan_notice.set(self.convert(warnings[0]) if warnings else self.t('全部屬性已配對；點選列可看比較依據。'))
         if labels:
-            idx=next((i for i,item in enumerate(scan.items) if item.fingerprint()==previous),0)
+            idx=preferred_preview(scan,previous_scan,previous_index)
             self.result_choice.current(idx);self.current=scan.items[idx];self.show_comparison(self.current)
         else:
-            self.result_choice.set('');self.current=None;self.compare_tree.delete(*self.compare_tree.get_children())
+            self.result_choice.set('');self.current=None;self.compare_tree.delete(*self.compare_tree.get_children());self.reuse_button.configure(state='disabled')
             self.verdict_label.configure(text=self.t('擷取受遮擋' if scan.mode=='blocked' else '尚無完整屬性'),foreground='#8a560c')
             self.item_heading.configure(text=self.t('請依下方原因調整'));self.comparison_detail.set(self.t('可到設定查看診斷與辨識文字。'))
     def open_item(self,item):
         self.notebook.select(self.scan_tab);self.current=item;self.scan_notice.set('');self.show_comparison(item)
     def edit_current(self):
         if self.current is None:raise ValueError(self.t('目前沒有可核對藏品；可到持有庫手動新增。'))
-        self.show_editor(self.current)
+        item=self.draft_map.get(self.current.draft_id,self.current) if self.current.draft_id is not None else self.current
+        self.show_editor(item)
+    def reuse_existing(self):
+        if self.editor_open:raise ValueError(self.t('請先關閉編輯視窗。'))
+        if self.current is None or self.current.suspected_id is None or self.current.draft_id is None:raise ValueError(self.t('目前沒有可沿用的對應。'))
+        item_id=self.store.accept_existing(self.current.draft_id,self.current.suspected_id)
+        self.refresh();self.open_item(self.item_map[item_id]);self.status.set(self.t('已沿用既有資料，件數保持不變。'))
+    def organize_pending(self):
+        if self.editor_open:raise ValueError(self.t('請先關閉編輯視窗。'))
+        self.pause_writes();count=self.store.organize_pending();self.refresh();self.status.set(self.t('已整理 ')+str(count)+self.t(' 筆疑似誤讀；請在待核對清單比對，資料未自動轉正。'))
     def confirm_current(self):
         if self.editor_open:raise ValueError(self.t('請先完成並關閉編輯視窗。'))
         if self.current is None:raise ValueError(self.t('目前沒有可確認的藏品；請先擷取藏品詳情。'))
@@ -357,7 +392,7 @@ class App:
         self.stop();self.close_editor();self.editor_previous_current=self.current;self.editor_from_inventory=from_inventory;self.editor_open=True;self.current=item;self.edit_id=item.id;self.edit_draft_id=item.draft_id
         matched=next((i for i in self.items if i.id==item.id),None)
         if matched:item.quantity=matched.quantity
-        win=self.own(tk.Toplevel(self.root));self.editor_window=win;win.title(self.t('核對藏品資料'));win.geometry('520x610');win.minsize(450,560);win.geometry(f'+{max(0,self.root.winfo_x()+20)}+{max(0,self.root.winfo_y()+20)}');win.protocol('WM_DELETE_WINDOW',self.close_editor)
+        win=self.own(tk.Toplevel(self.root));self.editor_window=win;win.title(self.t('核對藏品資料'));win.geometry('560x710');win.minsize(520,660);win.geometry(f'+{max(0,self.root.winfo_x()+20)}+{max(0,self.root.winfo_y()+20)}');win.protocol('WM_DELETE_WINDOW',self.close_editor)
         body=ttk.Frame(win,padding=12);body.pack(fill='both',expand=True)
         all_warnings=list(dict.fromkeys(item.warnings))
         warnings='\n'.join(all_warnings[:2])+((self.t('\n另有 ')+str(len(all_warnings)-2)+self.t(' 項原因，可在診斷頁查看。')) if len(all_warnings)>2 else '') or self.t('核對類別、全部屬性及單位；名稱、品質、戰力可留空。')
@@ -369,12 +404,11 @@ class App:
             widget=ttk.Combobox(row,textvariable=v,values=[self.t(c) for c in self.store.categories()],width=width) if key=='category' else ttk.Entry(row,textvariable=v,width=width)
             widget.pack(side='left',padx=(0,10))
         self.equipped=tk.BooleanVar(value=item.equipped);ttk.Checkbutton(body,text=self.t('目前生效中'),variable=self.equipped).pack(anchor='w',pady=5)
-        ttk.Label(body,text=self.t('每行：屬性名稱 | 數值 | 單位（% 或留空）')).pack(anchor='w')
-        self.stat_editor=tk.Text(body,height=7,font=(self.font,10),wrap='word',undo=True);self.stat_editor.pack(fill='both',expand=True,pady=5)
-        self.stat_editor.insert('1.0','\n'.join(f'{self.t(s.name)} | {s.value} | {s.unit}' for s in item.stats))
-        meta=ttk.LabelFrame(body,text=self.t('次要資訊（可留空）'),padding=6);meta.pack(fill='x',pady=5)
-        for rownum,key in enumerate(('name','quality','power')):
-            label={'name':'原名稱','quality':'品質','power':'戰力'}[key];ttk.Label(meta,text=self.t(label)).grid(row=rownum,column=0,sticky='w',padx=(0,8))
+        self.stat_rows=StatRows(body,item.stats,self.definitions,self.t,self.guard);self.stat_rows.pack(fill='both',expand=True,pady=5)
+        if item.suspected_id in self.item_map:self.button(body,'載入既有資料供比對',self.load_existing_editor).pack(anchor='w',pady=3)
+        meta=ttk.LabelFrame(body,text=self.t('名稱與品階（未顯示可留空）'),padding=6);meta.pack(fill='x',pady=5)
+        for rownum,key in enumerate(('name','quality','level','power')):
+            label={'name':'藏品名稱','quality':'品階／品質','level':'等級','power':'戰力'}[key];ttk.Label(meta,text=self.t(label)).grid(row=rownum,column=0,sticky='w',padx=(0,8))
             v=tk.StringVar(value=self.t(getattr(item,key)));self.fields[key]=v
             widget=ttk.Combobox(meta,textvariable=v,values=[self.t(q) for q in ('普通','精良','稀有','史诗','传奇')]) if key=='quality' else ttk.Entry(meta,textvariable=v)
             widget.grid(row=rownum,column=1,sticky='ew',pady=2)
@@ -382,16 +416,17 @@ class App:
         self.reviewed=tk.BooleanVar(value=False);ttk.Checkbutton(body,text=self.t('已核對完整屬性；新屬性以數值越高越好'),variable=self.reviewed).pack(anchor='w',pady=5)
         bar=ttk.Frame(body);bar.pack(fill='x')
         self.button(bar,'儲存已核對',self.save_reviewed).pack(side='left',padx=(0,6));self.button(bar,'暫存待核對',lambda:self.save_reviewed(False)).pack(side='left');self.button(bar,'關閉',self.close_editor).pack(side='right')
+    def load_existing_editor(self):
+        target=self.item_map.get(self.current.suspected_id) if self.current else None
+        if target is None:raise ValueError(self.t('對應資料已移除。'))
+        self.stat_rows.set_stats(target.stats)
+        for key in ('category','name','quality','level','power'):self.fields[key].set(self.t(getattr(target,key)))
+        self.fields['quantity'].set(str(target.quantity));self.equipped.set(target.equipped);self.edit_id=target.id
     def read_editor(self):
-        stats=[]
-        for line in self.stat_editor.get('1.0','end').splitlines():
-            if not line.strip():continue
-            parts=[p.strip() for p in line.split('|')]
-            if len(parts)!=3:raise ValueError(self.t('每行請填：名稱 | 數值 | 單位（% 或留空）'))
-            stats.append(Stat(parts[0],parts[1].lstrip('+'),parts[2]))
+        stats=self.stat_rows.get_stats()
         power=self.fields['power'].get().strip()
         if power and not power.isdigit():raise ValueError(self.t('戰力請填入整數，或留空'))
-        return Item(norm(self.fields['category'].get()),norm(self.fields['name'].get()),norm(self.fields['quality'].get()),power,stats,equipped=self.equipped.get(),source=self.current.source if self.current else 'manual',quantity=int(self.fields['quantity'].get()))
+        return Item(norm(self.fields['category'].get()),norm(self.fields['name'].get()),norm(self.fields['quality'].get()),power,stats,equipped=self.equipped.get(),source=self.current.source if self.current else 'manual',quantity=int(self.fields['quantity'].get()),level=norm(self.fields['level'].get()))
     def save_reviewed(self,confirmed=True):
         if confirmed and not self.reviewed.get():raise ValueError(self.t('請先核對完整屬性，再勾選核對完成。'))
         item=self.read_editor();item.id=self.edit_id
@@ -446,6 +481,27 @@ class App:
             n,u=self.def_rows[int(row)];self.store.define(n,u,direction)
         self.refresh()
     def selected_counts(self):return {i.id:i.quantity for i in self.selected_records() if i.draft_id is None}
+    def show_tradeoffs(self):
+        selected=self.selected_records()
+        if not selected or any(i.draft_id is not None or not i.confirmed for i in selected):raise ValueError(self.t('請選取已確認藏品，再查看用途影響。'))
+        if self.plan_mode.current()==1:goals=[(g['name'],g['unit'],g['weight']) for g in self.plan_goals]
+        else:
+            idx=self.goal.current();goals=[(*self.goal_defs[idx],1)] if 0<=idx<len(self.goal_defs) else []
+        result=self.advisor.removal_impact({i.id:i.quantity for i in selected},goals,self.plan_scope())
+        win=self.own(tk.Toplevel(self.root));win.title(self.t('用途影響（開啟時資料）'));win.geometry('680x500');win.transient(self.root)
+        body=ttk.Frame(win,padding=12);body.pack(fill='both',expand=True)
+        self.wrapped(body,text=self.t('假設移除選取的全部件數：')+'、'.join(self.t(i.label()) for i in selected[:3])+(self.t(' 等') if len(selected)>3 else '')).pack(fill='x',pady=5)
+        score=result['score']
+        caption=(self.t('目前用途範圍的分數：')+score['before']+' → '+score['after']+self.t('；減少 ')+score['loss']) if score else self.t('尚未設定分析用途；下表仍顯示所選欄位的各詞條影響。')
+        self.wrapped(body,text=caption).pack(fill='x',pady=4)
+        self.wrapped(body,text=self.t('保守判斷：')+'、'.join(dict.fromkeys(self.t(STATES[self.advisor.verdict(i)]) for i in selected))).pack(fill='x',pady=3)
+        footer=ttk.Frame(body);footer.pack(side='bottom',fill='x')
+        self.wrapped(footer,text='下表依欄位分列，不假定不同組別同時生效。「—」表示無可靠替代或規則未知；pp 為百分點。請依常用用途及可接受損失取捨。').pack(fill='x',pady=5)
+        self.button(footer,'關閉',win.destroy).pack(anchor='e')
+        tree=self.make_tree(body,['effect','before','after','loss'],['欄位／詞條','移除前最高','移除後最高','減少'],[340,90,90,85],height=8)
+        for row in result['effects']:
+            unit=row['unit'];display=lambda v:fmt(v,unit) if v is not None else '—'
+            tree.insert('','end',values=(self.t(row['category'])+'／'+self.t(row['name']),display(row['before']),display(row['after']),fmt(row['loss'],'pp' if unit=='%' else '') if row['loss'] is not None else '—'))
     def refresh_recycle(self):
         selected=self.selected_records();draft_count=sum(i.draft_id is not None for i in selected)
         counts=self.selected_counts()
@@ -492,6 +548,7 @@ class App:
         self.stop();self.ignore_scans=True
     def reset_preview(self):
         self.current=None;self.pending=[];self.last_scan=None;self.edit_id=None;self.edit_draft_id=None
+        self.reuse_button.configure(state='disabled')
         self.result_choice.set('');self.result_choice['values']=[];self.compare_tree.delete(*self.compare_tree.get_children())
         self.item_heading.configure(text=self.t('等待遊戲藏品詳情'));self.verdict_label.configure(text=self.t('等待辨識'))
         self.scan_notice.set('');self.comparison_detail.set(self.t('資料變更後已重新計算；可重新開始辨識。'))
@@ -532,7 +589,7 @@ class App:
         if answer!=marker:raise ValueError(self.t('確認文字不符，沒有刪除任何資料。'))
         self.store.clear(reset_rules=reset,reset_settings=reset)
         if reset:
-            self.region=None;self.plan_goals=[];self.plan_mode.current(0);self.autosave.set(True);self.auto_dock.set(True);self.topmost.set(False);self.root.attributes('-topmost',False)
+            self.region=None;self.plan_goals=[];self.plan_mode.current(0);self.plan_group.current(0);self.autosave.set(True);self.auto_dock.set(True);self.topmost.set(False);self.root.attributes('-topmost',False)
         self.reset_preview();self.refresh();self.refresh_database_summary()
         self.status.set(self.t('資料庫已重設，請重新選區；編號已歸零。' if reset else '藏品和草稿已清空，設定保留；編號已歸零。'))
     def ensure_idle(self):
@@ -659,7 +716,7 @@ class App:
                         self.prepare_item(item)
                         auto=repeat>=2 and self.autosave.get() and item.complete and not item.warnings
                         kind,record_id=self.store.observe(item,confirmed=bool(auto),raw_text=scan.text)
-                        if kind=='item':item.id=record_id
+                        if kind=='item':item.id=record_id;item.draft_id=None
                         else:item.draft_id=record_id;item.id=None
                         saved=True
                     if saved:self.refresh()
@@ -667,7 +724,7 @@ class App:
                     if not scan.items:self.status.set(self.convert(scan.messages[0]) if scan.messages else self.t('尚無可配對屬性，未寫入持有庫。'))
                     else:
                         known={i.fingerprint() for i in self.items if i.confirmed}
-                        confirmed=sum(i.fingerprint() in known for i in scan.items)
+                        confirmed=sum(i.id in self.item_map and self.item_map[i.id].confirmed for i in scan.items)
                         self.status.set(self.t('讀到 ')+str(len(scan.items))+self.t(' 件；已確認 ')+str(confirmed)+self.t(' 件，待核對 ')+str(len(scan.items)-confirmed)+self.t(' 件。'))
         except queue.Empty:pass
         except Exception as e:self.log.exception('Result handling failed');self.status.set(self.t('處理失敗：')+str(e))
@@ -692,9 +749,9 @@ class App:
         self.ensure_idle()
         path=filedialog.asksaveasfilename(parent=self.root,defaultextension='.json',initialfile='treasure-inventory.json')
         if not path:return
-        payload={'format':'treasure-assistant','version':2,'attributes':[{'name':n,'unit':u,'direction':d} for (n,u),d in self.definitions.items()],
-                 'items':[{'category':i.category,'name':i.name,'quality':i.quality,'power':i.power,'equipped':i.equipped,'confirmed':i.confirmed,'quantity':i.quantity,'stats':[{'name':s.name,'value':s.value,'unit':s.unit} for s in i.stats]} for i in self.items],
-                 'drafts':[{'category':i.category,'name':i.name,'quality':i.quality,'power':i.power,'quantity':i.quantity,'warnings':i.warnings,'raw_text':self.store.draft_text(i.draft_id),
+        payload={'format':'treasure-assistant','version':3,'attributes':[{'name':n,'unit':u,'direction':d} for (n,u),d in self.definitions.items()],
+                 'items':[{'category':i.category,'name':i.name,'quality':i.quality,'level':i.level,'power':i.power,'equipped':i.equipped,'confirmed':i.confirmed,'quantity':i.quantity,'stats':[{'name':s.name,'value':s.value,'unit':s.unit} for s in i.stats]} for i in self.items],
+                 'drafts':[{'category':i.category,'name':i.name,'quality':i.quality,'level':i.level,'power':i.power,'quantity':i.quantity,'warnings':i.warnings,'raw_text':self.store.draft_text(i.draft_id),
                     'stats':[{'name':a.name,'value':a.value,'unit':a.unit} for a in i.stats]} for i in self.store.drafts()]}
         Path(path).write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
         self.status.set(self.t('已匯出目前持有庫；分享程式時不必分享此檔。'))
@@ -706,9 +763,9 @@ class App:
         if not path:return
         if Path(path).stat().st_size>10_000_000:raise ValueError(self.t('匯入檔案過大'))
         data=json.loads(Path(path).read_text(encoding='utf-8'))
-        if data.get('format')!='treasure-assistant' or data.get('version') not in (1,2):raise ValueError(self.t('不支援的持有庫格式'))
-        objects=[Item(v['category'],v['name'],v['quality'],str(v['power']),[Stat(**s) for s in v['stats']],equipped=bool(v.get('equipped')),source='import',quantity=int(v.get('quantity',1))) for v in data['items']]
-        draft_objects=[Item(v.get('category',''),v.get('name',''),v.get('quality',''),str(v.get('power','')),[Stat(**a) for a in v.get('stats',[])],source='import',quantity=int(v.get('quantity',1)),warnings=v.get('warnings',[])+['匯入資料待核對'],complete=False) for v in data.get('drafts',[])]
+        if data.get('format')!='treasure-assistant' or data.get('version') not in (1,2,3):raise ValueError(self.t('不支援的持有庫格式'))
+        objects=[Item(v['category'],v['name'],v['quality'],str(v['power']),[Stat(**s) for s in v['stats']],equipped=bool(v.get('equipped')),source='import',quantity=int(v.get('quantity',1)),level=str(v.get('level',''))) for v in data['items']]
+        draft_objects=[Item(v.get('category',''),v.get('name',''),v.get('quality',''),str(v.get('power','')),[Stat(**a) for a in v.get('stats',[])],source='import',quantity=int(v.get('quantity',1)),warnings=v.get('warnings',[])+['匯入資料待核對'],complete=False,level=str(v.get('level',''))) for v in data.get('drafts',[])]
         definitions=[(norm(d['name']),d['unit'],int(d['direction'])) for d in data.get('attributes',[])]
         if any(d not in (-1,0,1) or u not in ('','%') for n,u,d in definitions):raise ValueError(self.t('屬性規則格式錯誤'))
         if not messagebox.askyesno(self.t('匯入持有庫'),self.t('匯入會合併資料；相同資料不增加件數。匯入藏品先列為待核對，避免舊庫存誤判。'),parent=self.root):return

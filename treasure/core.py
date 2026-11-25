@@ -20,7 +20,14 @@ def norm(text: str) -> str:
 def traditional(text: str) -> str:
     return _TRAD.convert(text)
 
-DEFAULT_CATEGORIES = ['汉灯','偶人','美玉','面具','松石','金器']
+CATEGORY_GROUPS = {
+    '精美饰物':['汉灯','偶人','美玉','面具','松石','金器'],
+    '祭祀礼乐':['青铜觥','青铜尊','青铜壶','博山炉','青铜簋','青铜鼎'],
+}
+DEFAULT_CATEGORIES = [c for group in CATEGORY_GROUPS.values() for c in group]
+
+def category_group(category):
+    return next((group for group,categories in CATEGORY_GROUPS.items() if norm(category) in categories),'自订')
 NAME_CATEGORIES = {
     '鹿形青铜油灯':'汉灯','击鼓说唱陶俑':'偶人','猪嘴玉龙':'美玉',
     '青铜兽面面具':'面具','鎏金镶绿松石龙首带钩':'松石',
@@ -77,13 +84,18 @@ class Item:
     quantity: int = 1
     draft_id: int | None = None
     complete: bool = True
+    level: str = ''
+    suspected_id: int | None = None
+    observation_note: str = ''
+    screen_side: str = ''
     def fingerprint(self):
         # Name is deliberately excluded: OCR variations in names must not duplicate gear.
         payload = [norm(self.category),norm(self.quality),str(self.power),
                    sorted((norm(s.name),number(s.value),s.unit) for s in self.stats)]
+        if self.level:payload.append(norm(self.level))
         return hashlib.sha256(json.dumps(payload,ensure_ascii=False).encode()).hexdigest()
     def label(self):
-        category=self.category or '類別待核對'
+        category=self.name or self.category or '名稱待核對'
         if self.draft_id is not None:return f'{category} D{self.draft_id:04d}'
         return f'{category} #{self.id:04d}' if self.id else category
 
@@ -101,8 +113,11 @@ class Store:
         CREATE TABLE IF NOT EXISTS stats(item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,name TEXT NOT NULL,value TEXT NOT NULL,unit TEXT NOT NULL,raw TEXT NOT NULL DEFAULT '',PRIMARY KEY(item_id,name,unit));
         CREATE TABLE IF NOT EXISTS drafts(id INTEGER PRIMARY KEY AUTOINCREMENT,fingerprint TEXT UNIQUE NOT NULL,category TEXT NOT NULL,name TEXT NOT NULL,quality TEXT NOT NULL,power TEXT NOT NULL,payload TEXT NOT NULL,raw_text TEXT NOT NULL DEFAULT '',last_seen TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS observation_aliases(fingerprint TEXT PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,item_fingerprint TEXT NOT NULL);
         ''')
         with self.conn:
+            if 'level' not in {r[1] for r in self.conn.execute('PRAGMA table_info(items)')}:
+                self.conn.execute("ALTER TABLE items ADD COLUMN level TEXT NOT NULL DEFAULT ''")
             self.conn.executemany('INSERT OR IGNORE INTO categories VALUES(?)',[(v,) for v in DEFAULT_CATEGORIES])
             self.conn.executemany('INSERT OR IGNORE INTO attributes VALUES(?,?,1)',[(v,'%' if v!='兵营训练容量' else '') for v in SEED_ATTRS])
     def close(self): self.conn.close()
@@ -123,7 +138,7 @@ class Store:
     def save(self,item:Item,confirmed=False,update_id=None,quantity=None):
         with self.conn:return self._save(item,confirmed,update_id,quantity)
     def _save(self,item:Item,confirmed=False,update_id=None,quantity=None):
-        item.category=norm(item.category); item.name=norm(item.name); item.quality=norm(item.quality)
+        item.category=norm(item.category); item.name=norm(item.name); item.quality=norm(item.quality);item.level=norm(item.level)
         if not item.category or not item.stats:raise ValueError('category and attributes required')
         if confirmed and not item.complete:raise ValueError('incomplete attributes must be reviewed before confirmation')
         if len({(s.name,s.unit) for s in item.stats}) != len(item.stats): raise ValueError('duplicate attributes')
@@ -137,8 +152,8 @@ class Store:
             if existing and existing[0]!=update_id:raise ValueError('same visible data already exists; update quantity there')
             if not self.conn.execute('SELECT 1 FROM items WHERE id=?',(update_id,)).fetchone():raise ValueError('missing item')
             item_id=update_id
-            self.conn.execute('UPDATE items SET fingerprint=?,category=?,name=?,quality=?,power=?,equipped=?,confirmed=?,quantity=?,source=?,last_seen=? WHERE id=?',
-                (fp,item.category,item.name,item.quality,str(item.power),int(item.equipped),int(confirmed),count,item.source,now,item_id))
+            self.conn.execute('UPDATE items SET fingerprint=?,category=?,name=?,quality=?,power=?,equipped=?,confirmed=?,quantity=?,source=?,last_seen=?,level=? WHERE id=?',
+                (fp,item.category,item.name,item.quality,str(item.power),int(item.equipped),int(confirmed),count,item.source,now,item.level,item_id))
         elif existing:
             item_id=existing[0]
             # Reobserving never increments quantities and never downgrades a reviewed record.
@@ -150,8 +165,8 @@ class Store:
                     self.conn.execute('UPDATE items SET equipped=1 WHERE id=?',(item_id,))
             return item_id,False
         else:
-            cur=self.conn.execute('INSERT INTO items(fingerprint,category,name,quality,power,equipped,confirmed,quantity,source,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                (fp,item.category,item.name,item.quality,str(item.power),int(item.equipped),int(confirmed),count,item.source,now))
+            cur=self.conn.execute('INSERT INTO items(fingerprint,category,name,quality,power,equipped,confirmed,quantity,source,last_seen,level) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (fp,item.category,item.name,item.quality,str(item.power),int(item.equipped),int(confirmed),count,item.source,now,item.level))
             item_id=cur.lastrowid
         self.conn.execute('DELETE FROM stats WHERE item_id=?',(item_id,))
         self.conn.executemany('INSERT INTO stats VALUES(?,?,?,?,?)',[(item_id,s.name,s.value,s.unit,s.raw) for s in item.stats])
@@ -159,11 +174,11 @@ class Store:
             self.conn.execute('UPDATE items SET equipped=0 WHERE category=? AND id<>?',(item.category,item_id))
         return item_id,True
     def items(self,confirmed_only=False):
-        rows=self.conn.execute('SELECT id,category,name,quality,power,equipped,confirmed,quantity,source FROM items'+(' WHERE confirmed=1' if confirmed_only else '')+' ORDER BY id').fetchall()
+        rows=self.conn.execute('SELECT id,category,name,quality,power,equipped,confirmed,quantity,source,level FROM items'+(' WHERE confirmed=1' if confirmed_only else '')+' ORDER BY id').fetchall()
         attrs={}
         for item_id,n,v,u,raw in self.conn.execute('SELECT item_id,name,value,unit,raw FROM stats ORDER BY rowid'):
             attrs.setdefault(item_id,[]).append(Stat(n,v,u,raw=raw))
-        return [Item(c,n,q,p,attrs.get(i,[]),equipped=bool(e),source=so,id=i,confirmed=bool(co),quantity=qt) for i,c,n,q,p,e,co,qt,so in rows]
+        return [Item(c,n,q,p,attrs.get(i,[]),equipped=bool(e),source=so,id=i,confirmed=bool(co),quantity=qt,level=level) for i,c,n,q,p,e,co,qt,so,level in rows]
     def delete(self,counts:dict[int,int]):
         # Called only after explicit confirmation of completed recycling.
         with self.conn:
@@ -178,11 +193,13 @@ class Store:
     def _sync_draft_references(self,changed_ids):
         for did,payload in self.conn.execute('SELECT id,payload FROM drafts').fetchall():
             value=json.loads(payload);item_id=value.get('editing_id')
-            if item_id not in changed_ids:continue
-            actual=self.conn.execute('SELECT quantity FROM items WHERE id=?',(item_id,)).fetchone()
-            if actual is None:
-                value['editing_id']=None;value.setdefault('warnings',[]).append('原紀錄已刪除，確認草稿時將新增一筆。')
-            else:value['quantity']=actual[0]
+            if item_id in changed_ids:
+                actual=self.conn.execute('SELECT quantity FROM items WHERE id=?',(item_id,)).fetchone()
+                if actual is None:
+                    value['editing_id']=None;value.setdefault('warnings',[]).append('原紀錄已刪除，確認草稿時將新增一筆。')
+                else:value['quantity']=actual[0]
+            suspect=value.get('suspected_id')
+            if suspect in changed_ids and not self.conn.execute('SELECT 1 FROM items WHERE id=?',(suspect,)).fetchone():value['suspected_id']=None
             self.conn.execute('UPDATE drafts SET payload=? WHERE id=?',(json.dumps(value,ensure_ascii=False,separators=(',',':')),did))
     def backup(self,destination):
         with sqlite3.connect(str(destination)) as target:self.conn.backup(target)
@@ -190,13 +207,13 @@ class Store:
     def _draft_payload(item):
         return json.dumps({'stats':[{'name':a.name,'value':a.value,'unit':a.unit,'confidence':a.confidence,'raw':a.raw} for a in item.stats],
             'warnings':list(dict.fromkeys(item.warnings)), 'confidence':item.confidence,'equipped':item.equipped,
-            'quantity':item.quantity,'source':item.source,'complete':item.complete,'editing_id':item.id},ensure_ascii=False,separators=(',',':'))
+            'quantity':item.quantity,'source':item.source,'complete':item.complete,'editing_id':item.id,'level':item.level,'suspected_id':item.suspected_id},ensure_ascii=False,separators=(',',':'))
     def drafts(self):
         result=[]
         for did,c,n,q,p,payload in self.conn.execute('SELECT id,category,name,quality,power,payload FROM drafts ORDER BY id'):
             v=json.loads(payload)
             result.append(Item(c,n,q,p,[Stat(**a) for a in v['stats']],equipped=bool(v.get('equipped')),confidence=v.get('confidence',0),
-                warnings=v.get('warnings',[]),source=v.get('source','capture'),quantity=v.get('quantity',1),id=v.get('editing_id'),draft_id=did,complete=v.get('complete',False)))
+                warnings=v.get('warnings',[]),source=v.get('source','capture'),quantity=v.get('quantity',1),id=v.get('editing_id'),draft_id=did,complete=v.get('complete',False),level=v.get('level',''),suspected_id=v.get('suspected_id')))
         return result
     def draft_text(self,draft_id):
         row=self.conn.execute('SELECT raw_text FROM drafts WHERE id=?',(draft_id,)).fetchone()
@@ -209,6 +226,7 @@ class Store:
         for draft in self.drafts():
             if draft.power!=item.power or draft.category!=item.category:continue
             if draft.quality and item.quality and draft.quality!=item.quality:continue
+            if draft.level!=item.level:continue
             other={(s.name,s.unit):s.value for s in draft.stats}
             if current==other or (current.items()<=other.items() or other.items()<=current.items()):
                 matches.append(draft)
@@ -220,12 +238,16 @@ class Store:
             raise ValueError('no recognizable item data to preserve')
         fp=item.fingerprint();row=self.conn.execute('SELECT id FROM drafts WHERE fingerprint=?',(fp,)).fetchone()
         existing=next((d for d in self.drafts() if row and d.draft_id==row[0]),None)
+        if existing is None and item.suspected_id is not None:
+            candidates=[d for d in self.drafts() if d.suspected_id==item.suspected_id and d.draft_id!=update_id and d.source!='manual-draft' and d.id is None]
+            if len(candidates)==1:existing=candidates[0]
         if update_id is not None:
             original=next((d for d in self.drafts() if d.draft_id==update_id),None)
             if original is None:raise ValueError('draft no longer exists')
             if existing is None:existing=original
         if existing is None:
             compatible=self._compatible_drafts(item)
+            if item.suspected_id is not None:compatible=[d for d in compatible if d.source!='manual-draft' and d.id is None]
             if len(compatible)==1:existing=compatible[0]
         # Keep a more complete observation; do not replace it with a shorter later read.
         chosen=item
@@ -245,6 +267,21 @@ class Store:
         return did
     def observe(self,item,confirmed=False,raw_text=''):
         existing=next((i for i in self.items() if i.fingerprint()==item.fingerprint()),None)
+        if existing is None and item.source!='manual-draft':
+            alias=self.conn.execute('SELECT item_id,item_fingerprint FROM observation_aliases WHERE fingerprint=?',(item.fingerprint(),)).fetchone()
+            target=next((i for i in self.items(True) if alias and i.id==alias[0] and i.fingerprint()==alias[1]),None)
+            if target is not None:
+                item.observation_note='沿用已核對的辨識差異對應；既有屬性與件數保持不變。'
+                return 'item',target.id
+            if alias is not None:
+                with self.conn:self.conn.execute('DELETE FROM observation_aliases WHERE fingerprint=?',(item.fingerprint(),))
+            target,kind=self.related_record(item)
+            if target is not None:
+                if kind=='partial':
+                    item.observation_note='本次漏讀或等級未讀到，沿用既有已確認資料。'
+                    return 'item',target.id
+                item.suspected_id=target.id;item.warnings=list(dict.fromkeys(item.warnings+[f'疑似已收錄 #{target.id:04d}；請比對或沿用既有資料。']))
+                return 'draft',self.stage(item,raw_text)
         if confirmed:
             saved_id,_=self.save(item,confirmed=True)
             # Remove only the uniquely matching draft when the full record is confirmed.
@@ -258,17 +295,88 @@ class Store:
             self.save(item,confirmed=False)
             return 'item',existing.id
         return 'draft',self.stage(item,raw_text)
+    def related_record(self,item):
+        """Conservative hints: same name, slot, power; never absorb changed values."""
+        if not (item.name and item.category and item.power and item.stats):return None,None
+        observed={(s.name,s.unit):s.value for s in item.stats}
+        if len(observed)!=len(item.stats):return None,None
+        matches=[];definitions=self.definitions()
+        for known in self.items(True):
+            if (norm(known.name),known.category,known.power)!=(norm(item.name),norm(item.category),item.power):continue
+            if item.quality and item.quality!=known.quality:continue
+            if item.level and item.level!=known.level:continue
+            values={(s.name,s.unit):s.value for s in known.stats}
+            if len(observed)>len(values):continue
+            used=set();exact=0;valid=True
+            for key,value in observed.items():
+                if key in values:
+                    if key in used or values[key]!=value:valid=False;break
+                    used.add(key);exact+=1;continue
+                # A valid other troop/scope/effect is not an OCR synonym.
+                if key in definitions and definitions[key]!=0:valid=False;break
+                choices=[k for k,v in values.items() if k not in used and k[1]==key[1] and v==value
+                         and SequenceMatcher(None,k[0],key[0]).ratio()>=.84
+                         and (k[0].split(']')[0] if ']' in k[0] else '')==(key[0].split(']')[0] if ']' in key[0] else '')]
+                if len(choices)!=1:valid=False;break
+                used.add(choices[0])
+            if not valid:continue
+            all_exact=exact==len(observed)
+            enough=len(observed)>=2 or (all_exact and len(observed)==len(values))
+            if enough:matches.append((known,'partial' if all_exact and (not item.complete or (not item.level and known.level)) else 'suspect'))
+        return matches[0] if len(matches)==1 else (None,None)
+    def accept_existing(self,draft_id,item_id):
+        draft=next((d for d in self.drafts() if d.draft_id==draft_id),None)
+        target=next((i for i in self.items(True) if i.id==item_id),None)
+        if draft is None or target is None or draft.suspected_id!=item_id:raise ValueError('對應資料已變更，請重新比對')
+        related,kind=self.related_record(draft)
+        if related is None or related.id!=item_id:raise ValueError('對應資料已變更，請重新比對')
+        with self.conn:
+            self.conn.execute('INSERT OR REPLACE INTO observation_aliases VALUES(?,?,?)',(draft.fingerprint(),item_id,target.fingerprint()))
+            self.conn.execute('DELETE FROM drafts WHERE id=?',(draft_id,))
+        return item_id
+    def organize_pending(self):
+        changed=0
+        for draft in self.drafts():
+            if draft.id is not None or draft.source not in ('capture','detail','compare','recycle'):continue
+            target,kind=self.related_record(draft)
+            if target is None:continue
+            draft.suspected_id=target.id
+            draft.warnings=list(dict.fromkeys(draft.warnings+[f'疑似已收錄 #{target.id:04d}；請比對或沿用既有資料。']))
+            self.stage(draft,self.draft_text(draft.draft_id),update_id=draft.draft_id);changed+=1
+        groups={}
+        for draft in self.drafts():
+            if draft.suspected_id is not None and draft.id is None and draft.source in ('capture','detail','compare','recycle'):
+                groups.setdefault(draft.suspected_id,[]).append(draft)
+        for group in groups.values():
+            if len(group)<2:continue
+            keep=min(d.draft_id for d in group);best=max(group,key=lambda d:(d.complete,len(d.stats),d.confidence))
+            raw=self.draft_text(best.draft_id)
+            with self.conn:
+                for draft in group:
+                    if draft.draft_id!=keep:self.conn.execute('DELETE FROM drafts WHERE id=?',(draft.draft_id,))
+                self.conn.execute('UPDATE drafts SET fingerprint=?,category=?,name=?,quality=?,power=?,payload=?,raw_text=? WHERE id=?',
+                    (best.fingerprint(),best.category,best.name,best.quality,best.power,self._draft_payload(best),raw,keep))
+        return changed
+    def counts(self):
+        items=self.items();drafts=self.drafts()
+        return {'confirmed_groups':sum(i.confirmed for i in items),'confirmed_quantity':sum(i.quantity for i in items if i.confirmed),
+                'pending':sum(not i.confirmed for i in items)+len(drafts),'suspected':sum(d.suspected_id is not None for d in drafts)}
     def resolve_draft(self,draft_id,item,confirmed=True):
-        if not self.conn.execute('SELECT 1 FROM drafts WHERE id=?',(draft_id,)).fetchone():raise ValueError('draft no longer exists')
+        draft=next((d for d in self.drafts() if d.draft_id==draft_id),None)
+        if draft is None:raise ValueError('draft no longer exists')
         existing=next((i for i in self.items() if i.fingerprint()==item.fingerprint()),None)
+        if existing is not None and item.id is None and item.source in ('capture','detail','compare','recycle','import'):item.quantity=existing.quantity
         # save() and draft removal share one transaction; a failed edit preserves the draft.
         with self.conn:
             item_id,_=self._save(item,confirmed=confirmed,update_id=item.id if item.id is not None else existing.id if existing else None)
+            if confirmed and existing is not None and draft.suspected_id==item_id:
+                self.conn.execute('INSERT OR REPLACE INTO observation_aliases VALUES(?,?,?)',(draft.fingerprint(),item_id,item.fingerprint()))
             self.conn.execute('DELETE FROM drafts WHERE id=?',(draft_id,))
         return item_id
     def confirm_visible(self,item):
         """Explicitly accept the displayed snapshot without changing a live OCR object."""
         reviewed=replace(item,stats=list(item.stats),warnings=[],complete=True,confirmed=True,draft_id=None)
+        if item.suspected_id is not None:raise ValueError('疑似重複資料，請先比對並選擇沿用既有，或在編輯中補正。')
         if not reviewed.category or not reviewed.stats:raise ValueError('需要擺放類別與至少一項完整屬性；請用編輯／補正。')
         if len({(s.name,s.unit) for s in reviewed.stats})!=len(reviewed.stats):raise ValueError('屬性重複，請先編輯／補正。')
         existing=next((i for i in self.items() if i.fingerprint()==reviewed.fingerprint()),None)
@@ -412,3 +520,34 @@ class Advisor:
                 if item.confirmed and not self.dominators(item,excluded):reasons.append('multi')
             risks[item.id]=reasons
         return risks
+    def removal_impact(self,counts,goals=(),scope=None):
+        """Read-only losses for an explicitly selected batch, without choosing a policy."""
+        confirmed=[i for i in self.items if i.confirmed]
+        by_id={i.id:i for i in confirmed}
+        if any(k not in by_id or v<1 or v>by_id[k].quantity for k,v in counts.items()):raise ValueError('請先選取已確認藏品並核對件數')
+        excluded={k for k,v in counts.items() if v==by_id[k].quantity}
+        categories={by_id[k].category for k in counts}
+        remaining=[i for i in confirmed if i.id not in excluded]
+        effects=[]
+        for category in sorted(categories):
+            keys={(s.name,s.unit) for i in confirmed if i.category==category for s in i.stats}
+            for key in sorted(keys):
+                direction=self.definitions.get(key,0)
+                def best(items):
+                    values=[Decimal(s.value) for i in items if i.category==category for s in i.stats if (s.name,s.unit)==key]
+                    return (max(v*direction for v in values)*direction) if values and direction else None
+                before=best(confirmed);after=best(remaining)
+                effects.append({'category':category,'name':key[0],'unit':key[1],
+                    'before':number(before) if before is not None else None,'after':number(after) if after is not None else None,
+                    'loss':number((before-after)*direction) if before is not None and after is not None else None})
+        score=None
+        if goals:
+            parsed=[((norm(n),u),Decimal(number(w))) for n,u,w in goals]
+            if any(w<=0 or not self.definitions.get(key) for key,w in parsed):raise ValueError('目標權重或屬性規則尚未設定')
+            if len(parsed)>1 and any(key[1]!='%' for key,w in parsed):raise ValueError('多用途比較只支援百分比')
+            def total(items):
+                groups={i.category for i in items if scope is None or category_group(i.category)==scope}
+                return sum((max((sum((Decimal(next((s.value for s in i.stats if (s.name,s.unit)==key),'0'))*w*self.definitions[key] for key,w in parsed),Decimal(0)) for i in items if i.category==category),default=Decimal(0)) for category in groups),Decimal(0))
+            before=total(confirmed);after=total(remaining)
+            score={'before':number(before),'after':number(after),'loss':number(before-after)}
+        return {'effects':effects,'score':score}
