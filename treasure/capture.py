@@ -4,6 +4,17 @@ import threading
 import time
 
 
+def modal_blocks_capture(root):
+    """Unpost a native ttk dropdown without resolving its Tcl-only widget in Python."""
+    current=str(root.tk.call('grab','current',root._w))
+    if not current:return False
+    if str(root.tk.call('winfo','class',current))=='ComboboxPopdown':
+        owner=str(root.tk.call('winfo','parent',current))
+        if str(root.tk.call('winfo','class',owner))=='TCombobox':
+            root.tk.call('ttk::combobox::Unpost',owner)
+    return bool(str(root.tk.call('grab','current',root._w)))
+
+
 def overlaps(a,b):
     return (a['left'] < b['left']+b['width'] and b['left'] < a['left']+a['width'] and
             a['top'] < b['top']+b['height'] and b['top'] < a['top']+a['height'])

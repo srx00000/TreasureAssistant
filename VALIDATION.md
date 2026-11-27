@@ -1,4 +1,13 @@
-# Validation — v0.6.0
+# Validation — v0.6.1
+
+## v0.6.1 verification
+
+- 136 unit and regression tests passed (122 existing plus 14 new). Synthetic tests cover one/both misread comparison headers with positional context, rejecting unrelated/multi-error/appraisal headers, wrapped adjacent effects, fine-quality two-effect completeness, low-confidence review, Tcl dropdown handling, preserving actual modals and finishing failed capture tickets immediately.
+- Actual RapidOCR on the two newly supplied comparison images now parses both sides: five/three and five/two attributes. Lower-confidence wrapped text remains subject to review; successful panel detection does not assert all OCR text is certain.
+- Traditional/simplified virtual-display integration reproduced the original Python `KeyError` with a real posted ttk ComboboxPopdown, then verified safe unposting without changing selection. One-shot and continuous workers captured pixel-exact frames with the selector open, defaulted to the right candidate and retained both records. These UI checks replay the actual OCR output through the parser; they do not mock native grabs or screen capture.
+- Real modal dialogs remained open and returned an immediate blocked-ticket error. Both UI workflows finished without error logs, capture timeout or saved screenshots. Existing real OCR occlusion-capture integration was rerun for auto-docking and temporary-hide fallback.
+- No dependencies or database schema changed. Private screenshots, logs, paths and inventory observations are excluded from published source; new repository fixtures are synthetic.
+- Tests run on Linux/Tk virtual displays. The Windows-specific environment from the supplied log has not been executed here.
 
 ## v0.6.0 verification
 

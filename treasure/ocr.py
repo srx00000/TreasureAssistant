@@ -47,6 +47,21 @@ def result_lines(results):
         lines.append(Line(norm(text),float(score),min(xs),min(ys),max(xs),max(ys)))
     return sorted(lines,key=lambda l:(l.y,l.x))
 
+def attribute_headers(lines):
+    """Allow one misread title glyph only with a nearby identity and value row."""
+    target='藏品属性';headers=[]
+    for line in lines:
+        if line.text==target:headers.append(line);continue
+        if len(line.text)!=len(target) or sum(a!=b for a,b in zip(line.text,target))!=1 or line.confidence<.65:continue
+        span=max(line.right-line.left,line.height*3)
+        identity=any(l.bottom<line.top and 0<line.y-l.y<max(240,line.height*16)
+                     and abs(l.x-line.x)<span*1.5 and any(l.text.startswith(q) for q in QUALITIES) for l in lines)
+        value=any(line.bottom<l.y<line.y+max(180,line.height*12)
+                  and line.x<l.right<line.x+span*3
+                  and re.search(r'[+\-]\d+(?:[.,]\d+)?%?$',l.text) for l in lines)
+        if identity and value:headers.append(line)
+    return headers
+
 def parse(lines:list[Line],category_for_name=None):
     text='\n'.join(l.text for l in lines)
     # High-specificity app labels detect self-capture before any gear is staged.
@@ -57,7 +72,7 @@ def parse(lines:list[Line],category_for_name=None):
     hits=sorted({m for m in markers if norm(m).replace('／','/') in check_text})
     if len(hits)>=2 or '自己的藏品详情/替换/回收' in check_text:
         return Scan('blocked',[],['偵測到助手介面遮擋；請重新擷取，不會寫入持有庫。'],text,{'self_capture_markers':hits})
-    headers=[l for l in lines if l.text=='藏品属性']
+    headers=attribute_headers(lines)
     if not headers:
         categories=sorted({l.text for l in lines if l.text in DEFAULT_CATEGORIES})
         if len(categories)>=2:
@@ -72,7 +87,7 @@ def parse(lines:list[Line],category_for_name=None):
     headers=sorted(best,key=lambda l:l.x)[:2]
     recycle_title=any(l.text=='藏品回收' and l.bottom<headers[0].top and headers[0].y-l.y<max(400,headers[0].height*30) for l in lines)
     mode='compare' if len(headers)==2 else 'recycle' if recycle_title else 'detail'
-    items=[];messages=[];diagnostics={'columns':[]}
+    items=[];messages=[];diagnostics={'columns':[],'attribute_headers':[{'text':h.text,'recovered':h.text!='藏品属性'} for h in headers]}
     mids=[(headers[0].x+headers[1].x)/2] if len(headers)==2 else []
     ignored={'查看','生效中','卸下','替换藏品','藏品回收','藏宝阁','藏品总战力','属性预览','精美饰物','祭祀礼乐'}
     for idx,header in enumerate(headers):
@@ -124,8 +139,10 @@ def parse(lines:list[Line],category_for_name=None):
         gaps=[values[j][0].y-values[j-1][0].y for j in range(1,len(values)) if values[j][0].y-values[j-1][0].y>text_height*.65]
         threshold=min(text_height*1.25,median(gaps)*.60) if gaps else text_height*1.25
         groups=[]
+        def anchor(line):
+            return min(range(len(values)),key=lambda j:abs(line.y-values[j][0].y)) if values else None
         for l in labels:
-            if groups and l.y-groups[-1][-1].y<=max(4,threshold):groups[-1].append(l)
+            if groups and l.y-groups[-1][-1].y<=max(4,threshold) and anchor(l)==anchor(groups[-1][0]):groups[-1].append(l)
             else:groups.append([l])
         def distance(y,group):
             top=min(l.top for l in group);bottom=max(l.bottom for l in group)
@@ -157,7 +174,7 @@ def parse(lines:list[Line],category_for_name=None):
         if not quality:warnings.append('品質未讀到；可核對屬性後手動保存')
         if not name:warnings.append('名稱未讀到（次要資訊，可留空）')
         if not power:warnings.append('戰力未讀到（次要資訊，可留空）')
-        expected={'稀有':3,'史诗':4,'传奇':5}.get(quality)
+        expected={'精良':2,'稀有':3,'史诗':4,'传奇':5}.get(quality)
         if expected is None or len(stats)!=expected:warnings.append('請核對屬性是否完整；已配對 '+str(len(stats))+' 項')
         if len({(s.name,s.unit) for s in stats})!=len(stats):warnings.append('存在重複屬性')
         if min(scores)<.90:warnings.append('部分文字不清楚，請核對')

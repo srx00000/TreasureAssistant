@@ -14,10 +14,10 @@ from difflib import SequenceMatcher
 from .core import Store, Advisor, Item, Stat, norm, traditional, fmt, NAME_CATEGORIES, CATEGORY_GROUPS, category_group
 from .ocr import Engine, parse, preferred_preview
 from .widgets import StatRows
-from .capture import overlaps, safe_position, request_frame
+from .capture import overlaps, safe_position, request_frame, modal_blocks_capture
 
 APP_ROOT=Path(__file__).resolve().parent.parent
-VERSION='0.6.0'
+VERSION='0.6.1'
 STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對','multi':'多用途保留'}
 ROW_STATES={'unique':'本欄位最高／唯一','tie':'並列最高','lower':'已有較高值','unknown':'比較規則待核對'}
 
@@ -661,7 +661,9 @@ class App:
         return {'left':window.winfo_rootx()-10,'top':window.winfo_rooty()-32,'width':window.winfo_width()+20,'height':window.winfo_height()+42}
     def handle_capture(self,ticket):
         if self.closed or ticket.cancelled or self.cancel.is_set():ticket.finish(error=RuntimeError('Capture cancelled'));return
-        if self.root.grab_current() is not None:ticket.finish(error=RuntimeError(self.t('請先關閉目前的確認對話框。')));return
+        try:
+            if modal_blocks_capture(self.root):ticket.finish(error=RuntimeError(self.t('請先關閉目前的確認對話框。')));return
+        except Exception as e:ticket.finish(error=e);return
         self.tickets.append(ticket);hidden=[];changed=False
         try:
             self.root.update_idletasks()
