@@ -33,6 +33,17 @@ NAME_CATEGORIES = {
     '青铜兽面面具':'面具','鎏金镶绿松石龙首带钩':'松石',
     '镀金镶绿松石龙首带钩':'松石','鹰形金冠饰':'金器',
     '卧羊首金柄钥':'金器','卧羊首金琴钥':'金器',
+    '龙纹兕觥':'青铜觥',
+    '妇好青铜鸮尊':'青铜尊','何尊':'青铜尊','四羊方尊':'青铜尊',
+    '颂壶':'青铜壶','曾中游父方壶':'青铜壶','曾仲游父方壶':'青铜壶',
+    '错金银立鸟几何纹铜壶':'青铜壶','和田玉博山炉':'博山炉',
+    '利簋':'青铜簋','伯旅父簋':'青铜簋','大禾方鼎':'青铜鼎','杜岭方鼎':'青铜鼎',
+}
+# Observed low-resolution glyph readings; never fuzzy-match arbitrary item names.
+NAME_READINGS = {
+    '龙纹兄':'龙纹兕觥','龙纹兄能':'龙纹兕觥',
+    '妇好青铜鸡尊':'妇好青铜鸮尊',
+    '利算':'利簋','利篮':'利簋','伯旅父算':'伯旅父簋',
 }
 SEED_ATTRS = [
     '木材采集速度','食物采集速度','铁矿采集速度','煤矿采集速度',
@@ -42,6 +53,7 @@ SEED_ATTRS = [
     '训练步兵资源消耗减少',
 ] + [f'{troop}{stat}' for troop in ['步兵','骑兵','弓兵','[全阵营]士兵']
      for stat in ['攻击力','防御力','生命值','破坏力']]
+ATTRIBUTE_CATALOG = {(n,'%' if n!='兵营训练容量' else ''):1 for n in SEED_ATTRS}
 
 def number(value) -> str:
     d = Decimal(str(value))
@@ -108,6 +120,7 @@ class Store:
         self.conn.execute('PRAGMA secure_delete=ON')
         self.conn.executescript('''
         CREATE TABLE IF NOT EXISTS categories(name TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS collection_names(name TEXT PRIMARY KEY,category TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS attributes(name TEXT NOT NULL,unit TEXT NOT NULL,direction INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(name,unit));
         CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY AUTOINCREMENT,fingerprint TEXT UNIQUE NOT NULL,category TEXT NOT NULL,name TEXT NOT NULL,quality TEXT NOT NULL,power TEXT NOT NULL,equipped INTEGER NOT NULL DEFAULT 0,confirmed INTEGER NOT NULL DEFAULT 0,quantity INTEGER NOT NULL DEFAULT 1,source TEXT NOT NULL,last_seen TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS stats(item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,name TEXT NOT NULL,value TEXT NOT NULL,unit TEXT NOT NULL,raw TEXT NOT NULL DEFAULT '',PRIMARY KEY(item_id,name,unit));
@@ -119,6 +132,7 @@ class Store:
             if 'level' not in {r[1] for r in self.conn.execute('PRAGMA table_info(items)')}:
                 self.conn.execute("ALTER TABLE items ADD COLUMN level TEXT NOT NULL DEFAULT ''")
             self.conn.executemany('INSERT OR IGNORE INTO categories VALUES(?)',[(v,) for v in DEFAULT_CATEGORIES])
+            self.conn.executemany('INSERT OR IGNORE INTO collection_names VALUES(?,?)',NAME_CATEGORIES.items())
             self.conn.executemany('INSERT OR IGNORE INTO attributes VALUES(?,?,1)',[(v,'%' if v!='兵营训练容量' else '') for v in SEED_ATTRS])
     def close(self): self.conn.close()
     def get_setting(self,key,default=None):
@@ -128,13 +142,20 @@ class Store:
         with self.conn:self.conn.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',(key,json.dumps(value,ensure_ascii=False)))
     def categories(self):return [r[0] for r in self.conn.execute('SELECT name FROM categories ORDER BY rowid')]
     def definitions(self):return {(n,u):d for n,u,d in self.conn.execute('SELECT name,unit,direction FROM attributes ORDER BY name')}
+    def catalog_definitions(self):
+        definitions=self.definitions()
+        return {key:definitions.get(key,direction) for key,direction in sorted(ATTRIBUTE_CATALOG.items())}
+    def name_categories(self):
+        learned={}
+        for item in self.items(True):
+            if item.name:learned.setdefault(item.name,set()).add(item.category)
+        return {n:next(iter(categories)) for n,categories in learned.items() if len(categories)==1}|dict(self.conn.execute('SELECT name,category FROM collection_names'))
     def define(self,name,unit,direction):
         if direction not in (-1,0,1):raise ValueError('Invalid direction')
         with self.conn:self.conn.execute('INSERT OR REPLACE INTO attributes VALUES(?,?,?)',(norm(name),unit,direction))
     def inferred_category(self,name):
         name=norm(name)
-        row=self.conn.execute('SELECT category FROM items WHERE name=? ORDER BY confirmed DESC,id LIMIT 1',(name,)).fetchone()
-        return row[0] if row else NAME_CATEGORIES.get(name,'')
+        return self.name_categories().get(name,'')
     def save(self,item:Item,confirmed=False,update_id=None,quantity=None):
         with self.conn:return self._save(item,confirmed,update_id,quantity)
     def _save(self,item:Item,confirmed=False,update_id=None,quantity=None):
@@ -410,6 +431,8 @@ class Store:
             self.conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('items','drafts')")
             if reset_rules:
                 self.conn.execute('DELETE FROM attributes');self.conn.execute('DELETE FROM categories')
+                self.conn.execute('DELETE FROM collection_names')
+                self.conn.executemany('INSERT INTO collection_names VALUES(?,?)',NAME_CATEGORIES.items())
                 self.conn.executemany('INSERT INTO categories VALUES(?)',[(v,) for v in DEFAULT_CATEGORIES])
                 self.conn.executemany('INSERT INTO attributes VALUES(?,?,1)',[(v,'%' if v!='兵营训练容量' else '') for v in SEED_ATTRS])
             if reset_settings:self.conn.execute('DELETE FROM settings')

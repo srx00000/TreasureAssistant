@@ -2,12 +2,12 @@
 import tkinter as tk
 from tkinter import ttk
 from decimal import InvalidOperation
-from .core import Stat,norm
+from .core import Stat,norm,ATTRIBUTE_CATALOG
 
 class StatRows(ttk.Frame):
-    def __init__(self,parent,stats,definitions,translate,guard):
+    def __init__(self,parent,stats,translate,guard):
         super().__init__(parent);self.t=translate;self.guard=guard
-        self.names=sorted({n for n,u in definitions}|{s.name for s in stats})
+        self.names=sorted({n for n,u in ATTRIBUTE_CATALOG})
         controls=ttk.Frame(self);controls.pack(side='bottom',fill='x')
         self.name=tk.StringVar();self.value=tk.StringVar()
         self.name_box=ttk.Combobox(controls,textvariable=self.name,values=[self.t(n) for n in self.names]);self.name_box.pack(fill='x',pady=(4,3))

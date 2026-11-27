@@ -11,13 +11,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from decimal import Decimal
 from difflib import SequenceMatcher
-from .core import Store, Advisor, Item, Stat, norm, traditional, fmt, NAME_CATEGORIES, CATEGORY_GROUPS, category_group
+from .core import Store, Advisor, Item, Stat, norm, traditional, fmt, CATEGORY_GROUPS, category_group
 from .ocr import Engine, parse, preferred_preview
 from .widgets import StatRows
 from .capture import overlaps, safe_position, request_frame, modal_blocks_capture
 
 APP_ROOT=Path(__file__).resolve().parent.parent
-VERSION='0.6.1'
+VERSION='0.6.2'
 STATES={'keep':'建議保留','tie':'並列備選','candidate':'可回收候選','review':'待核對','multi':'多用途保留'}
 ROW_STATES={'unique':'本欄位最高／唯一','tie':'並列最高','lower':'已有較高值','unknown':'比較規則待核對'}
 
@@ -208,9 +208,9 @@ class App:
         if not self.region:self.region_label.configure(text=self.t('尚未選取遊戲區域'));return
         r=self.region;self.region_label.configure(text=self.t('已選區：')+f"{r['width']} × {r['height']}"+self.t('；視窗移動或縮放後重選。'))
     def refresh(self):
-        self.items=self.store.items();self.item_map={i.id:i for i in self.items};self.draft_records=self.store.drafts();self.draft_map={i.draft_id:i for i in self.draft_records};self.definitions=self.store.definitions();self.advisor=Advisor(self.items,self.definitions);self.known_categories={i.name:i.category for i in self.items if i.confirmed and i.name};self.region_status()
+        self.items=self.store.items();self.item_map={i.id:i for i in self.items};self.draft_records=self.store.drafts();self.draft_map={i.draft_id:i for i in self.draft_records};self.definitions=self.store.definitions();self.catalog_definitions=self.store.catalog_definitions();self.advisor=Advisor(self.items,self.definitions);self.known_categories=self.store.name_categories();self.region_status()
         self.fill_inventory()
-        old=self.goal.get();self.goal_defs=[(n,u) for (n,u),d in self.definitions.items() if d and any(i.confirmed and any((s.name,s.unit)==(n,u) for s in i.stats) for i in self.items)]
+        old=self.goal.get();self.goal_defs=[(n,u) for (n,u),d in self.catalog_definitions.items() if d and any(i.confirmed and any((s.name,s.unit)==(n,u) for s in i.stats) for i in self.items)]
         values=[self.t(n)+(' (%)' if u else self.t('（固定數量）')) for n,u in self.goal_defs];self.goal['values']=values
         if old in values:self.goal.set(old)
         elif values:self.goal.current(0)
@@ -276,6 +276,7 @@ class App:
         def remove():
             selected={int(i) for i in tree.selection()};goals[:]=[g for i,g in enumerate(goals) if i not in selected];refill()
         def save():
+            if any((g['name'],g['unit']) not in self.catalog_definitions for g in goals):raise ValueError(self.t('用途含非固定清單詞條，請移除後重新選擇。'))
             self.advisor.weighted_plan([(g['name'],g['unit'],g['weight']) for g in goals])
             self.plan_goals=goals;self.store.setting('plan_goals',goals);self.plan_mode.current(1);self.change_plan_mode();win.destroy()
         self.button(row,'加入／更新',add).pack(side='left')
@@ -287,6 +288,7 @@ class App:
         multi=self.plan_mode.current()==1;self.goal.configure(state='disabled' if multi else 'readonly')
         self.plan_tree.heading('value',text=self.t('分數' if multi else '最高值'))
         if multi:
+            if any((g['name'],g['unit']) not in self.catalog_definitions for g in self.plan_goals):self.plan_summary.set(self.t('已保存用途含非固定清單詞條，請重新設定多用途。'));return
             try:plan,totals,current,missing=advisor.weighted_plan([(g['name'],g['unit'],g['weight']) for g in self.plan_goals])
             except ValueError as e:self.plan_summary.set(self.convert(str(e)));return
             goals=[(g['name'],g['unit']) for g in self.plan_goals]
@@ -404,7 +406,7 @@ class App:
             widget=ttk.Combobox(row,textvariable=v,values=[self.t(c) for c in self.store.categories()],width=width) if key=='category' else ttk.Entry(row,textvariable=v,width=width)
             widget.pack(side='left',padx=(0,10))
         self.equipped=tk.BooleanVar(value=item.equipped);ttk.Checkbutton(body,text=self.t('目前生效中'),variable=self.equipped).pack(anchor='w',pady=5)
-        self.stat_rows=StatRows(body,item.stats,self.definitions,self.t,self.guard);self.stat_rows.pack(fill='both',expand=True,pady=5)
+        self.stat_rows=StatRows(body,item.stats,self.t,self.guard);self.stat_rows.pack(fill='both',expand=True,pady=5)
         if item.suspected_id in self.item_map:self.button(body,'載入既有資料供比對',self.load_existing_editor).pack(anchor='w',pady=3)
         meta=ttk.LabelFrame(body,text=self.t('名稱與品階（未顯示可留空）'),padding=6);meta.pack(fill='x',pady=5)
         for rownum,key in enumerate(('name','quality','level','power')):
@@ -473,7 +475,7 @@ class App:
     def refresh_definitions(self):
         if self.def_tree is None or not self.def_tree.winfo_exists():return
         self.def_tree.delete(*self.def_tree.get_children());self.def_rows=[]
-        for (n,u),d in self.definitions.items():
+        for (n,u),d in self.catalog_definitions.items():
             if not any(any((s.name,s.unit)==(n,u) for s in i.stats) for i in self.items+self.draft_records):continue
             rid=str(len(self.def_rows));self.def_rows.append((n,u));self.def_tree.insert('','end',iid=rid,values=(self.t(n),u or self.t('數量'),self.t({1:'越高越好',-1:'越低越好',0:'待核對'}[d])))
     def set_direction(self,direction):
@@ -487,6 +489,7 @@ class App:
         if self.plan_mode.current()==1:goals=[(g['name'],g['unit'],g['weight']) for g in self.plan_goals]
         else:
             idx=self.goal.current();goals=[(*self.goal_defs[idx],1)] if 0<=idx<len(self.goal_defs) else []
+        if any((name,unit) not in self.catalog_definitions for name,unit,weight in goals):raise ValueError(self.t('用途含非固定清單詞條，請先重新設定用途。'))
         result=self.advisor.removal_impact({i.id:i.quantity for i in selected},goals,self.plan_scope())
         win=self.own(tk.Toplevel(self.root));win.title(self.t('用途影響（開啟時資料）'));win.geometry('680x500');win.transient(self.root)
         body=ttk.Frame(win,padding=12);body.pack(fill='both',expand=True)
@@ -609,7 +612,7 @@ class App:
                 if old[0]=='capture':old[1].cancelled=True;old[1].finish(error=RuntimeError('Capture cancelled'))
             except queue.Empty:break
         self.worker=threading.Thread(target=work,daemon=True);self.worker.start();self.worker_ui()
-    def category_map(self):return NAME_CATEGORIES|{i.name:i.category for i in self.store.items() if i.confirmed and i.name}
+    def category_map(self):return self.store.name_categories()
     def run_image(self,image,source,mapping):
         with self.engine_lock:lines=self.engine.recognize(image)
         result=parse(lines,(mapping|self.known_categories).get)
@@ -751,7 +754,7 @@ class App:
         self.ensure_idle()
         path=filedialog.asksaveasfilename(parent=self.root,defaultextension='.json',initialfile='treasure-inventory.json')
         if not path:return
-        payload={'format':'treasure-assistant','version':3,'attributes':[{'name':n,'unit':u,'direction':d} for (n,u),d in self.definitions.items()],
+        payload={'format':'treasure-assistant','version':3,'attributes':[{'name':n,'unit':u,'direction':d} for (n,u),d in self.catalog_definitions.items()],
                  'items':[{'category':i.category,'name':i.name,'quality':i.quality,'level':i.level,'power':i.power,'equipped':i.equipped,'confirmed':i.confirmed,'quantity':i.quantity,'stats':[{'name':s.name,'value':s.value,'unit':s.unit} for s in i.stats]} for i in self.items],
                  'drafts':[{'category':i.category,'name':i.name,'quality':i.quality,'level':i.level,'power':i.power,'quantity':i.quantity,'warnings':i.warnings,'raw_text':self.store.draft_text(i.draft_id),
                     'stats':[{'name':a.name,'value':a.value,'unit':a.unit} for a in i.stats]} for i in self.store.drafts()]}

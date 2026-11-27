@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 from statistics import median
-from .core import Item, Stat, norm, DEFAULT_CATEGORIES, NAME_CATEGORIES, category_group
+from .core import Item, Stat, norm, DEFAULT_CATEGORIES, NAME_CATEGORIES, NAME_READINGS, category_group
 
 @dataclass
 class Line:
@@ -100,12 +100,14 @@ def parse(lines:list[Line],category_for_name=None):
         level=re.search(r'[0-9]+',level_lines[0].text).group() if len(level_lines)==1 else ''
         name=qline.text[len(quality):] if qline else ''
         if qline and not name:
-            peers=[l for l in above if abs(l.y-qline.y)<qline.height and l is not qline and l.text not in ignored and not re.search(r'\d',l.text)]
-            name=''.join(l.text for l in sorted(peers,key=lambda l:l.x))
+            peers=[l for l in above if abs(l.y-qline.y)<qline.height and l is not qline and l.text not in ignored
+                   and re.search(r'[\u4e00-\u9fff]',l.text) and not re.search(r'\d',l.text)]
+            name=''.join(l.text for l in sorted(peers,key=lambda l:(l.y,l.x)))
         if not qline:
             names=[l for l in above if 3<=len(l.text)<=30 and l.text not in ignored and l.text not in DEFAULT_CATEGORIES
                    and re.search(r'[\u4e00-\u9fff]',l.text) and not re.search(r'\d',l.text) and header.y-l.y<130]
             if names:name=min(names,key=lambda l:abs(l.y-(header.y-55))).text
+        original_name=name;name=NAME_READINGS.get(name,name)
         name_y=qline.y if qline else header.y-60
         power_lines=[l for l in above if l not in level_lines and re.fullmatch(r'[^\d]{0,2}\d{4,12}',l.text) and l.y>name_y]
         power=re.sub(r'\D','',min(power_lines,key=lambda l:abs(l.y-(header.y-25))).text) if power_lines else ''
@@ -115,7 +117,8 @@ def parse(lines:list[Line],category_for_name=None):
         if not category and qline:
             possible=[l for l in above if 1<=len(l.text)<=8 and 8<qline.y-l.y<45 and l.text not in ignored and not re.search(r'\d',l.text)]
             if len(possible)==1 and mode=='detail':category=possible[0].text
-        if not category:category=(category_for_name(name) if category_for_name else '') or NAME_CATEGORIES.get(name,'')
+        known_category=(category_for_name(name) if category_for_name else '') or NAME_CATEGORIES.get(name,'')
+        if not category or (name in NAME_CATEGORIES and category not in DEFAULT_CATEGORIES):category=known_category
         after=[l for l in column if l.top>header.bottom and l.text in ('替换藏品','卸下','穿戴','普通','精良','可获得','回收','展示藏品对比','显示藏品对比','藏品对比')]
         stop=min([l.top for l in after]+[header.y+max(330,header.height*22)])
         body=[l for l in column if header.bottom<l.y<stop]
@@ -148,6 +151,7 @@ def parse(lines:list[Line],category_for_name=None):
             top=min(l.top for l in group);bottom=max(l.bottom for l in group)
             return max(top-y,y-bottom,0)
         stats=[];warnings=[];scores=[qline.confidence] if qline else [header.confidence];unpaired=[];used=set()
+        if name!=original_name:warnings.append('名稱字樣依內建對照補正，請核對：'+original_name+' → '+name)
         for vl,token,inline in values:
             options=[(distance(vl.y,g),j,g) for j,g in enumerate(groups) if j not in used]
             options.sort(key=lambda entry:(entry[0],abs(vl.y-sum(l.y for l in entry[2])/len(entry[2]))))

@@ -1,4 +1,13 @@
-# Validation — v0.6.1
+# Validation — v0.6.2
+
+## v0.6.2 verification
+
+- 152 unit and regression tests passed (136 existing plus 16 new). New checks cover twelve generic season names, category-only seeding, additive names-table migration with stable IDs/counts/drafts/settings, ambiguous learned names, catalog precedence, clear/reset behavior, fixed attribute choices despite pending or confirmed typos, wrong units and preserved direction overrides.
+- OCR tests cover exact generic season names, bounded explicit rare-glyph corrections with review warnings, unrecognized badge recovery, excluding ASCII power icons from separate names and correctly ordered multiline names.
+- Actual RapidOCR on nine supplied images produced one overview, two details and six two-sided comparisons. After name parsing and explicit corrections, every displayed item could be assigned to its corresponding new-season slot. This does not assert that every attribute or number was read correctly; low-confidence and unknown effect text still needs review. Only generic name/category metadata is added to source, not owned quantities, powers or stat rolls.
+- Traditional/simplified native Tk integration verified that editor options, single/multi-goal choices and rule rows exclude OCR and legacy typos; original erroneous records remain intact. Correcting a draft, custom pending text without vocabulary growth, clean exported rule metadata with lossless item content, invalid old goals blocked pending reconfiguration, seeded name lookup and restart all passed. Existing bilingual v0.6.0 editing/count/group/import-export and small-window workflows were rerun.
+- The selectable vocabulary is fixed at 35 name/unit pairs. Legacy internal rule data is retained for compatibility; filtered choices do not delete or rewrite old inventory. JSON remains v3. Only the additive collection_names table is new; dependencies are unchanged.
+- QA used Linux virtual displays; Windows/Taobao DPI and rendering still require on-device testing. Private screenshots, OCR observations and QA artifacts are excluded from the repository. New tests use synthetic stat values.
 
 ## v0.6.1 verification
 
